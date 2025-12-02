@@ -1,3 +1,4 @@
+import os
 import datetime as dt
 from typing import List, Dict, Any, Optional
 
@@ -9,10 +10,11 @@ import streamlit as st
 # CONFIG
 # -------------------------------------------------------------------
 
-# Your ALL-STAR BallDontLie key (NBA)
-API_KEY = "7f4db7a9-c34e-478d-a799-fef77b9d1f78"  # replace if needed
+API_KEY = "7f4db7a9-c34e-478d-a799-fef77b9d1f78"  # your BALLDONTLIE All-Star key
 BASE_URL = "https://api.balldontlie.io/v1"
 HEADERS = {"Authorization": API_KEY}
+
+HISTORY_FILE = "prop_history.csv"
 
 st.set_page_config(
     page_title="NBA Prop Research & Entry",
@@ -20,40 +22,82 @@ st.set_page_config(
 )
 
 # -------------------------------------------------------------------
-# BASIC STYLING
+# STYLING (NEW COLORS + BETTER CONTRAST)
 # -------------------------------------------------------------------
 
 CUSTOM_CSS = """
 <style>
+:root {
+  --bg-main: #020617;
+  --bg-panel: #020617;
+  --accent: #6366f1;
+  --accent-soft: rgba(99,102,241,0.25);
+  --metric-bg: #020617;
+  --metric-border: #1e293b;
+  --metric-shadow: 0 0 22px rgba(15,23,42,0.9);
+  --metric-tag: #9ca3af;
+  --metric-text: #f9fafb;
+}
+
 body {
-    background-color: #050711;
+  background: radial-gradient(circle at top, #111827 0, #020617 48%, #000000 100%);
+  color: #e5e7eb;
 }
+
 section.main > div {
-    padding-top: 0rem;
+  padding-top: 0rem;
 }
+
 .block-container {
-    padding-top: 1rem;
+  padding-top: 1rem;
 }
+
 h1, h2, h3, h4, h5 {
-    color: #f5f5ff;
+  color: #f9fafb;
 }
-.metric-tag {
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    color: #aaa;
+
+.stTabs [data-baseweb="tab-list"] {
+  gap: 0.5rem;
 }
-.metric-value {
-    font-size: 1.3rem;
-    font-weight: 600;
+
+.stTabs [data-baseweb="tab"] {
+  background-color: rgba(15,23,42,0.9);
+  border-radius: 999px;
+  padding: 0.4rem 0.9rem;
+  border: 1px solid rgba(148,163,184,0.35);
 }
+
+.stTabs [aria-selected="true"] {
+  background: radial-gradient(circle at top left, var(--accent-soft), #020617);
+  border-color: var(--accent);
+}
+
 .metric-card {
-    background: #101322;
-    border-radius: 0.75rem;
-    padding: 0.6rem 0.8rem;
-    border: 1px solid #262a3f;
+  background: radial-gradient(circle at top left, rgba(99,102,241,0.18), var(--metric-bg));
+  border-radius: 0.85rem;
+  padding: 0.6rem 0.9rem;
+  border: 1px solid var(--metric-border);
+  box-shadow: var(--metric-shadow);
 }
-.prop-table .stDataFrame {
-    border-radius: 0.75rem;
+
+.metric-tag {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  color: var(--metric-tag);
+  letter-spacing: 0.08em;
+}
+
+.metric-value {
+  font-size: 1.45rem;
+  font-weight: 650;
+  color: var(--metric-text);
+}
+
+.player-photo-card {
+  background: radial-gradient(circle at top, rgba(99,102,241,0.4), #020617);
+  border-radius: 1rem;
+  padding: 0.35rem;
+  border: 1px solid rgba(148,163,184,0.4);
 }
 </style>
 """
@@ -63,6 +107,7 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 # PROP DEFINITIONS
 # -------------------------------------------------------------------
 
+# Map display label -> underlying key logic
 PROP_DEFS = {
     "Points": "pts",
     "Rebounds": "reb",
@@ -79,13 +124,11 @@ PROP_DEFS = {
     "Minutes": "min",
 }
 
-
 # -------------------------------------------------------------------
 # HELPERS
 # -------------------------------------------------------------------
 
 def fetch_json(endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-    """Generic GET wrapper with basic error handling."""
     url = f"{BASE_URL}/{endpoint}"
     try:
         resp = requests.get(url, headers=HEADERS, params=params, timeout=8)
@@ -133,17 +176,13 @@ def build_player_index(players: List[Dict[str, Any]]):
 
 
 def get_current_season(today: Optional[dt.date] = None) -> int:
-    """NBA season code: year of season start (e.g. 2024 for 2024-25)."""
     if today is None:
         today = dt.date.today()
-    if today.month >= 10:
-        return today.year
-    return today.year - 1
+    return today.year if today.month >= 10 else today.year - 1
 
 
 @st.cache_data(ttl=900, show_spinner=False)
 def get_player_stats_for_season(player_id: int, season: int) -> List[Dict[str, Any]]:
-    """All regular-season stats for a player in a given season."""
     stats = []
     cursor = None
     while True:
@@ -239,24 +278,15 @@ def get_most_recent_stat(stats: List[Dict[str, Any]]) -> Optional[Dict[str, Any]
 
 @st.cache_data(ttl=900, show_spinner=False)
 def get_team_game_on_date(team_id: int, date: dt.date) -> Optional[Dict[str, Any]]:
-    """Return the game for a team on a specific date, if any."""
     date_str = date.strftime("%Y-%m-%d")
-    params = {
-        "team_ids[]": team_id,
-        "dates[]": date_str,
-        "per_page": 100,
-    }
+    params = {"team_ids[]": team_id, "dates[]": date_str, "per_page": 100}
     data = fetch_json("games", params)
     games = data.get("data", [])
-    if not games:
-        return None
-    # If multiple (rare), pick first
-    return games[0]
+    return games[0] if games else None
 
 
 @st.cache_data(ttl=900, show_spinner=False)
 def get_next_team_game(team_id: int) -> Optional[Dict[str, Any]]:
-    """Next upcoming game for a team from today forward."""
     today = dt.date.today()
     start = today.strftime("%Y-%m-%d")
     end = (today + dt.timedelta(days=30)).strftime("%Y-%m-%d")
@@ -289,7 +319,6 @@ def get_next_team_game(team_id: int) -> Optional[Dict[str, Any]]:
 
 
 def get_opponent_from_game(game: Dict[str, Any], team_id: int) -> (Dict[str, Any], str):
-    """Return opponent team dict and 'Home'/'Away' flag for player team."""
     home = game["home_team"]
     visitor = game["visitor_team"]
     if home["id"] == team_id:
@@ -300,7 +329,6 @@ def get_opponent_from_game(game: Dict[str, Any], team_id: int) -> (Dict[str, Any
 
 @st.cache_data(ttl=900, show_spinner=False)
 def get_recent_stats_for_h2h(player_id: int, seasons: List[int]) -> List[Dict[str, Any]]:
-    """Stats across multiple seasons for H2H and recent form."""
     stats_all: List[Dict[str, Any]] = []
     for season in seasons:
         stats_all.extend(get_player_stats_for_season(player_id, season))
@@ -346,12 +374,149 @@ def injuries_to_df(injuries: List[Dict[str, Any]]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def get_headshot_url(first: str, last: str) -> str:
+    """
+    Use community NBA headshots API (name-based).
+    This is best-effort; if the service is down, Streamlit will just fail to load the image.
+    """
+    def slug(s: str) -> str:
+        s = s.lower()
+        for ch in [" ", ".", "'", "`"]:
+            s = s.replace(ch, "_")
+        return s
+
+    return f"https://nba-players.herokuapp.com/players/{slug(last)}/{slug(first)}"
+
+
+def metric_card(col, label: str, value: Optional[float], extra: str = ""):
+    display_val = "—" if value is None else value
+    col.markdown(
+        f"""<div class="metric-card">
+<span class="metric-tag">{label}</span><br>
+<span class="metric-value">{display_val}</span>
+<div style="font-size:0.7rem;color:#9ca3af;margin-top:2px;">{extra}</div>
+</div>""",
+        unsafe_allow_html=True,
+    )
+
 # -------------------------------------------------------------------
-# MAIN UI
+# HISTORY STORAGE
+# -------------------------------------------------------------------
+
+def empty_history_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "Date",
+            "Player",
+            "Player ID",
+            "Team",
+            "Opponent",
+            "Home/Away",
+            "Prop",
+            "Side",
+            "Line",
+            "Odds",
+            "Season Avg",
+            "Last 5 Avg",
+            "Last 10 Avg",
+            "H2H Avg vs Opp",
+            "Game ID",
+            "Actual",
+            "Result",
+        ]
+    )
+
+
+def load_history() -> pd.DataFrame:
+    if not os.path.exists(HISTORY_FILE):
+        return empty_history_df()
+    try:
+        df = pd.read_csv(HISTORY_FILE)
+        # make sure all expected columns exist
+        missing = [c for c in empty_history_df().columns if c not in df.columns]
+        for c in missing:
+            df[c] = None
+        return df
+    except Exception:
+        return empty_history_df()
+
+
+def save_history(df: pd.DataFrame) -> None:
+    df.to_csv(HISTORY_FILE, index=False)
+
+
+def evaluate_results(df: pd.DataFrame) -> pd.DataFrame:
+    """Update Actual + Result for any past-dated, ungraded props."""
+    today = dt.date.today()
+    for idx, row in df.iterrows():
+        result = str(row.get("Result", ""))
+        if result in ("Hit", "Miss", "Push"):
+            continue
+
+        try:
+            game_date = dt.datetime.strptime(str(row["Date"]), "%Y-%m-%d").date()
+        except Exception:
+            continue
+
+        if game_date >= today:
+            continue  # game not finished yet
+
+        try:
+            player_id = int(row["Player ID"])
+            game_id = int(row["Game ID"])
+        except Exception:
+            continue
+
+        prop_label = str(row["Prop"])
+        prop_key = PROP_DEFS.get(prop_label)
+        if not prop_key:
+            continue
+
+        stats_data = fetch_json(
+            "stats",
+            {
+                "player_ids[]": player_id,
+                "game_ids[]": game_id,
+                "per_page": 10,
+            },
+        ).get("data", [])
+
+        if not stats_data:
+            df.at[idx, "Result"] = "No data"
+            continue
+
+        stat = stats_data[0]
+        actual = prop_value(stat, prop_key)
+        df.at[idx, "Actual"] = actual
+
+        try:
+            line_val = float(row["Line"])
+        except Exception:
+            df.at[idx, "Result"] = "Line error"
+            continue
+
+        side = str(row.get("Side", "Over"))
+        if abs(actual - line_val) < 1e-6:
+            res = "Push"
+        elif side == "Over":
+            res = "Hit" if actual > line_val else "Miss"
+        else:
+            res = "Hit" if actual < line_val else "Miss"
+
+        df.at[idx, "Result"] = res
+
+    return df
+
+# -------------------------------------------------------------------
+# SESSION STATE
 # -------------------------------------------------------------------
 
 if "prop_rows" not in st.session_state:
     st.session_state["prop_rows"] = []
+
+# -------------------------------------------------------------------
+# MAIN UI
+# -------------------------------------------------------------------
 
 st.title("NBA Prop Research & Entry")
 
@@ -361,17 +526,18 @@ if not players:
 
 player_labels, player_info = build_player_index(players)
 
-tab_form, tab_research = st.tabs(["Prop Entry Form", "Player Research"])
-
+tab_form, tab_research, tab_history = st.tabs(
+    ["Prop Entry Form", "Player Research", "Prop History"]
+)
 
 # -------------------------------------------------------------------
-# TAB 1: PROP ENTRY FORM
+# TAB 1: PROP ENTRY FORM (with delete + headshot)
 # -------------------------------------------------------------------
 
 with tab_form:
     st.subheader("Daily Prop Entry")
 
-    col_top1, col_top2 = st.columns([1, 1])
+    col_top1, col_top2 = st.columns([1.2, 1])
 
     with col_top1:
         game_date = st.date_input(
@@ -387,11 +553,8 @@ with tab_form:
         )
 
     with col_top2:
-        prop_choice = st.selectbox(
-            "Prop",
-            options=list(PROP_DEFS.keys()),
-            index=0,
-        )
+        prop_choice = st.selectbox("Prop", options=list(PROP_DEFS.keys()), index=0)
+        side_choice = st.selectbox("Side", options=["Over", "Under"], index=0)
         line_value = st.number_input(
             "Prop line (number)",
             step=0.5,
@@ -406,23 +569,37 @@ with tab_form:
         team_name = info["team_name"]
         team_abbr = info["team_abbr"]
 
-        st.markdown(
-            f"**Team:** {team_name} ({team_abbr})  |  **Player ID:** `{player_id}`"
-        )
+        img_col, text_col = st.columns([0.9, 2.6])
+        with img_col:
+            st.markdown('<div class="player-photo-card">', unsafe_allow_html=True)
+            st.image(
+                get_headshot_url(info["first_name"], info["last_name"]),
+                width=110,
+                caption="",
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        # Determine opponent from schedule for that date
+        with text_col:
+            st.markdown(
+                f"**{info['first_name']} {info['last_name']}**  \n"
+                f"{team_name} ({team_abbr}) · ID `{player_id}`"
+            )
+
+        # Matchup info
         game = get_team_game_on_date(team_id, game_date)
         opp_name = "Unknown"
         home_away = "N/A"
         opp_id = None
+        game_id = None
 
         if game:
             opp_team, home_away = get_opponent_from_game(game, team_id)
             opp_name = opp_team["full_name"]
             opp_id = opp_team["id"]
+            game_id = game["id"]
             st.markdown(
-                f"**Matchup:** {team_abbr} vs {opp_team['abbreviation']}  "
-                f"({home_away} for {team_abbr})"
+                f"**Matchup:** {team_abbr} vs {opp_team['abbreviation']} "
+                f"({home_away} for {team_abbr}) · Game ID `{game_id}`"
             )
         else:
             st.warning("No scheduled game found for this team on that date.")
@@ -434,9 +611,7 @@ with tab_form:
 
         stats_current = get_player_stats_for_season(player_id, current_season)
         stats_prev = get_player_stats_for_season(player_id, prev_season)
-        stats_recent = sorted(
-            stats_prev + stats_current, key=lambda s: s["game"]["date"]
-        )
+        stats_recent = sorted(stats_prev + stats_current, key=lambda s: s["game"]["date"])
 
         prop_key = PROP_DEFS[prop_choice]
 
@@ -451,26 +626,12 @@ with tab_form:
             h2h_games = len(stats_h2h)
             h2h_avg = average_for_prop(stats_h2h, prop_key)
 
-        # Metric cards
         st.markdown("##### Recent form for this prop")
         mcol1, mcol2, mcol3, mcol4 = st.columns(4)
-
-        def metric(col, label, val, extra=""):
-            with col:
-                st.markdown(
-                    f"""<div class="metric-card">
-<span class="metric-tag">{label}</span><br>
-<span class="metric-value">{'—' if val is None else val}</span>
-<div style="font-size:0.7rem;color:#888;margin-top:2px;">{extra}</div>
-</div>""",
-                    unsafe_allow_html=True,
-                )
-
-        metric(mcol1, "Season avg", season_avg)
-        metric(mcol2, "Last 5 avg", last5_avg)
-        metric(mcol3, "Last 10 avg", last10_avg)
-        extra = f"{h2h_games} games" if h2h_games else ""
-        metric(mcol4, "H2H vs opp avg", h2h_avg, extra)
+        metric_card(mcol1, "Season avg", season_avg)
+        metric_card(mcol2, "Last 5 avg", last5_avg)
+        metric_card(mcol3, "Last 10 avg", last10_avg)
+        metric_card(mcol4, "H2H vs opp avg", h2h_avg, extra=f"{h2h_games} games")
 
         st.markdown("---")
 
@@ -478,24 +639,70 @@ with tab_form:
             row = {
                 "Date": game_date.strftime("%Y-%m-%d"),
                 "Player": player_label,
+                "Player ID": player_id,
                 "Team": team_name,
                 "Opponent": opp_name,
                 "Home/Away": home_away,
                 "Prop": prop_choice,
+                "Side": side_choice,
                 "Line": line_value,
                 "Odds": odds_str,
                 "Season Avg": season_avg,
                 "Last 5 Avg": last5_avg,
                 "Last 10 Avg": last10_avg,
                 "H2H Avg vs Opp": h2h_avg,
+                "Game ID": game_id,
+                "Actual": None,
+                "Result": "Pending",
             }
             st.session_state["prop_rows"].append(row)
-            st.success("Prop added to sheet.")
+
+            hist_df = load_history()
+            hist_df = pd.concat([hist_df, pd.DataFrame([row])], ignore_index=True)
+            save_history(hist_df)
+
+            st.success("Prop added to sheet and history.")
 
     st.markdown("### Current prop sheet")
+
     if st.session_state["prop_rows"]:
         df_props = pd.DataFrame(st.session_state["prop_rows"])
-        st.dataframe(df_props, use_container_width=True, height=400)
+        df_props_display = df_props.copy()
+        df_props_display.index.name = "Row"
+
+        st.dataframe(df_props_display, use_container_width=True, height=400)
+
+        # Delete row control
+        del_col1, del_col2 = st.columns([2, 1])
+        with del_col1:
+            del_idx = st.selectbox(
+                "Select row to delete",
+                options=df_props_display.index,
+                format_func=lambda i: f"{i}: {df_props_display.loc[i, 'Player']} · "
+                                      f"{df_props_display.loc[i, 'Prop']} {df_props_display.loc[i, 'Side']} "
+                                      f"{df_props_display.loc[i, 'Line']}",
+            )
+        with del_col2:
+            if st.button("Delete selected row"):
+                # remove from session
+                st.session_state["prop_rows"].pop(int(del_idx))
+
+                # also remove from history file by matching Date/Player/Prop/Line/Odds
+                hist_df = load_history()
+                mask = ~(
+                    (hist_df["Date"] == df_props.loc[del_idx, "Date"])
+                    & (hist_df["Player"] == df_props.loc[del_idx, "Player"])
+                    & (hist_df["Prop"] == df_props.loc[del_idx, "Prop"])
+                    & (hist_df["Line"] == float(df_props.loc[del_idx, "Line"]))
+                    & (hist_df["Odds"].astype(str) == str(df_props.loc[del_idx, "Odds"]))
+                )
+                save_history(hist_df[mask])
+
+                try:
+                    st.rerun()
+                except Exception:
+                    st.experimental_rerun()
+
         csv = df_props.to_csv(index=False).encode("utf-8")
         st.download_button(
             "Download CSV",
@@ -506,15 +713,14 @@ with tab_form:
     else:
         st.info("No props added yet. Add a prop above to start building your sheet.")
 
-
 # -------------------------------------------------------------------
-# TAB 2: PLAYER RESEARCH
+# TAB 2: PLAYER RESEARCH (with headshot)
 # -------------------------------------------------------------------
 
 with tab_research:
     st.subheader("Player Research Lab")
 
-    rcol1, rcol2 = st.columns([1, 1])
+    rcol1, rcol2 = st.columns([1.2, 1])
 
     with rcol1:
         research_player_label = st.selectbox(
@@ -537,9 +743,20 @@ with tab_research:
         team_name = info["team_name"]
         team_abbr = info["team_abbr"]
 
-        st.markdown(
-            f"**Team:** {team_name} ({team_abbr})  |  **Player ID:** `{player_id}`"
-        )
+        img_col, text_col = st.columns([0.9, 2.6])
+        with img_col:
+            st.markdown('<div class="player-photo-card">', unsafe_allow_html=True)
+            st.image(
+                get_headshot_url(info["first_name"], info["last_name"]),
+                width=130,
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        with text_col:
+            st.markdown(
+                f"**{info['first_name']} {info['last_name']}**  \n"
+                f"{team_name} ({team_abbr}) · ID `{player_id}`"
+            )
 
         today = dt.date.today()
         current_season = get_current_season(today)
@@ -547,127 +764,167 @@ with tab_research:
 
         prop_key = PROP_DEFS[research_prop_choice]
 
-        # Get stats
         stats_current = get_player_stats_for_season(player_id, current_season)
         stats_prev = get_player_stats_for_season(player_id, prev_season)
-        stats_recent = sorted(
-            stats_prev + stats_current,
-            key=lambda s: s["game"]["date"],
-        )
+        stats_recent = sorted(stats_prev + stats_current, key=lambda s: s["game"]["date"])
 
         if not stats_recent:
             st.warning("No stats found for this player yet.")
-            st.stop()
-
-        # Recent performance & averages
-        most_recent = get_most_recent_stat(stats_recent)
-        last10_avg = last_n_average(stats_recent, prop_key, 10)
-        last20_avg = last_n_average(stats_recent, prop_key, 20)
-        season_avg = average_for_prop(stats_current, prop_key)
-        prev_season_avg = average_for_prop(stats_prev, prop_key)
-
-        # Next upcoming game for H2H + injuries
-        next_game = get_next_team_game(team_id)
-        opp_team = None
-        opp_id = None
-        h2h_avg = None
-        h2h_games = 0
-
-        if next_game:
-            opp_team, home_away = get_opponent_from_game(next_game, team_id)
-            opp_id = opp_team["id"]
-            st.markdown(
-                f"**Next Game:** {next_game['date']}  ·  "
-                f"{team_abbr} vs {opp_team['abbreviation']} "
-                f"({home_away} for {team_abbr})"
-            )
-
-            recent_seasons = [prev_season, current_season]
-            stats_for_h2h = get_recent_stats_for_h2h(player_id, recent_seasons)
-            stats_h2h = h2h_stats_vs_team(stats_for_h2h, opp_id)
-            h2h_games = len(stats_h2h)
-            h2h_avg = average_for_prop(stats_h2h, prop_key)
         else:
-            st.warning("No upcoming game found for this team in the next 30 days.")
+            most_recent = get_most_recent_stat(stats_recent)
+            last10_avg = last_n_average(stats_recent, prop_key, 10)
+            last20_avg = last_n_average(stats_recent, prop_key, 20)
+            season_avg = average_for_prop(stats_current, prop_key)
+            prev_season_avg = average_for_prop(stats_prev, prop_key)
 
-        st.markdown("##### Form snapshot for this prop")
-        fcol1, fcol2, fcol3, fcol4, fcol5 = st.columns(5)
+            next_game = get_next_team_game(team_id)
+            opp_team = None
+            opp_id = None
+            h2h_avg = None
+            h2h_games = 0
 
-        def metric2(col, label, val, extra=""):
-            with col:
+            if next_game:
+                opp_team, home_away = get_opponent_from_game(next_game, team_id)
+                opp_id = opp_team["id"]
                 st.markdown(
-                    f"""<div class="metric-card">
-<span class="metric-tag">{label}</span><br>
-<span class="metric-value">{'—' if val is None else val}</span>
-<div style="font-size:0.7rem;color:#888;margin-top:2px;">{extra}</div>
-</div>""",
-                    unsafe_allow_html=True,
+                    f"**Next Game:** {next_game['date']}  ·  "
+                    f"{team_abbr} vs {opp_team['abbreviation']} "
+                    f"({home_away} for {team_abbr})"
                 )
 
-        metric2(
-            fcol1,
-            "Most recent",
-            prop_value(most_recent, prop_key),
-            most_recent["game"]["date"],
-        )
-        metric2(fcol2, "Last 10 avg", last10_avg)
-        metric2(fcol3, "Last 20 avg", last20_avg)
-        metric2(fcol4, f"{current_season} season avg", season_avg)
-        metric2(fcol5, f"{prev_season} season avg", prev_season_avg)
+                recent_seasons = [prev_season, current_season]
+                stats_for_h2h = get_recent_stats_for_h2h(player_id, recent_seasons)
+                stats_h2h = h2h_stats_vs_team(stats_for_h2h, opp_id)
+                h2h_games = len(stats_h2h)
+                h2h_avg = average_for_prop(stats_h2h, prop_key)
+            else:
+                st.warning("No upcoming game found for this team in the next 30 days.")
 
-        if opp_team:
-            st.markdown("##### H2H vs next opponent")
-            hcol1, hcol2 = st.columns([1, 3])
-            metric2(
-                hcol1,
-                "H2H avg",
-                h2h_avg,
-                extra=f"{h2h_games} games (last 2 seasons)",
+            st.markdown("##### Form snapshot for this prop")
+            fcol1, fcol2, fcol3, fcol4, fcol5 = st.columns(5)
+
+            metric_card(
+                fcol1,
+                "Most recent",
+                prop_value(most_recent, prop_key),
+                most_recent["game"]["date"],
             )
+            metric_card(fcol2, "Last 10 avg", last10_avg)
+            metric_card(fcol3, "Last 20 avg", last20_avg)
+            metric_card(fcol4, f"{current_season} season avg", season_avg)
+            metric_card(fcol5, f"{prev_season} season avg", prev_season_avg)
 
-            # Mini game-log table vs opponent
-            if h2h_games:
-                stats_for_table = sorted(
-                    h2h_stats_vs_team(stats_recent, opp_id),
-                    key=lambda s: s["game"]["date"],
-                    reverse=True,
+            if opp_team:
+                st.markdown("##### H2H vs next opponent")
+                hcol1, hcol2 = st.columns([1, 3])
+                metric_card(
+                    hcol1,
+                    "H2H avg",
+                    h2h_avg,
+                    extra=f"{h2h_games} games (last 2 seasons)",
                 )
-                rows = []
-                for s in stats_for_table:
-                    g = s["game"]
-                    rows.append(
-                        {
-                            "Date": g["date"],
-                            "Prop Value": prop_value(s, prop_key),
-                            "PTS": s.get("pts", 0),
-                            "REB": s.get("reb", 0),
-                            "AST": s.get("ast", 0),
-                            "3PM": s.get("fg3m", 0),
-                            "MIN": parse_minutes(s.get("min")),
-                        }
+
+                if h2h_games:
+                    stats_for_table = sorted(
+                        h2h_stats_vs_team(stats_recent, opp_id),
+                        key=lambda s: s["game"]["date"],
+                        reverse=True,
                     )
-                df_h2h = pd.DataFrame(rows)
-                hcol2.dataframe(df_h2h, use_container_width=True, height=260)
+                    rows = []
+                    for s in stats_for_table:
+                        g = s["game"]
+                        rows.append(
+                            {
+                                "Date": g["date"],
+                                "Prop Value": prop_value(s, prop_key),
+                                "PTS": s.get("pts", 0),
+                                "REB": s.get("reb", 0),
+                                "AST": s.get("ast", 0),
+                                "3PM": s.get("fg3m", 0),
+                                "MIN": parse_minutes(s.get("min")),
+                            }
+                        )
+                    df_h2h = pd.DataFrame(rows)
+                    hcol2.dataframe(df_h2h, use_container_width=True, height=260)
+                else:
+                    hcol1.write(
+                        "No previous games vs this opponent in the last two seasons."
+                    )
+
+            st.markdown("##### Injury report (may impact minutes/usage)")
+            icol1, icol2 = st.columns(2)
+
+            team_injuries = get_team_injuries(team_id)
+            if team_injuries:
+                df_team_inj = injuries_to_df(team_injuries)
+                icol1.markdown(f"**{team_name} injuries**")
+                icol1.dataframe(df_team_inj, use_container_width=True, height=230)
             else:
-                hcol1.write("No previous games vs this opponent in last two seasons.")
+                icol1.info(f"No current injuries listed for {team_name}.")
 
-        # Injuries
-        st.markdown("##### Injury report (may impact minutes/usage)")
-        icol1, icol2 = st.columns(2)
+            if opp_team:
+                opp_injuries = get_team_injuries(opp_team["id"])
+                if opp_injuries:
+                    df_opp_inj = injuries_to_df(opp_injuries)
+                    icol2.markdown(f"**{opp_team['full_name']} injuries**")
+                    icol2.dataframe(df_opp_inj, use_container_width=True, height=230)
+                else:
+                    icol2.info(
+                        f"No current injuries listed for {opp_team['full_name']}."
+                    )
 
-        team_injuries = get_team_injuries(team_id)
-        if team_injuries:
-            df_team_inj = injuries_to_df(team_injuries)
-            icol1.markdown(f"**{team_name} injuries**")
-            icol1.dataframe(df_team_inj, use_container_width=True, height=230)
+# -------------------------------------------------------------------
+# TAB 3: PROP HISTORY (persistent CSV + grading)
+# -------------------------------------------------------------------
+
+with tab_history:
+    st.subheader("Prop History & Results")
+
+    hist_df = load_history()
+
+    if hist_df.empty:
+        st.info("No history saved yet. Add props on the form tab to start tracking.")
+    else:
+        hist_df["Date_dt"] = pd.to_datetime(hist_df["Date"])
+        min_d = hist_df["Date_dt"].min().date()
+        max_d = hist_df["Date_dt"].max().date()
+
+        date_range = st.date_input(
+            "Filter by date range",
+            value=(min_d, max_d),
+            min_value=min_d,
+            max_value=max_d,
+        )
+
+        if isinstance(date_range, tuple):
+            start_d, end_d = date_range
         else:
-            icol1.info(f"No current injuries listed for {team_name}.")
+            start_d = end_d = date_range
 
-        if opp_team:
-            opp_injuries = get_team_injuries(opp_team["id"])
-            if opp_injuries:
-                df_opp_inj = injuries_to_df(opp_injuries)
-                icol2.markdown(f"**{opp_team['full_name']} injuries**")
-                icol2.dataframe(df_opp_inj, use_container_width=True, height=230)
-            else:
-                icol2.info(f"No current injuries listed for {opp_team['full_name']}.")
+        mask = (hist_df["Date_dt"].dt.date >= start_d) & (
+            hist_df["Date_dt"].dt.date <= end_d
+        )
+        view_df = hist_df.loc[mask].drop(columns=["Date_dt"]).sort_values(
+            "Date", ascending=False
+        )
+
+        st.dataframe(view_df, use_container_width=True, height=500)
+
+        col_u1, col_u2 = st.columns([1, 2])
+        with col_u1:
+            if st.button("Update results for completed games"):
+                updated = evaluate_results(hist_df)
+                save_history(updated)
+                st.success("Results updated from BallDontLie stats.")
+                try:
+                    st.rerun()
+                except Exception:
+                    st.experimental_rerun()
+
+        csv_hist = hist_df.drop(columns=["Date_dt"]).to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "Download full history CSV",
+            data=csv_hist,
+            file_name="prop_history.csv",
+            mime="text/csv",
+        )
