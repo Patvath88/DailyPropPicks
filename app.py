@@ -1,4 +1,7 @@
 import os
+import math
+import uuid
+import statistics
 import datetime as dt
 from typing import List, Dict, Any, Optional
 
@@ -10,11 +13,12 @@ import streamlit as st
 # CONFIG
 # -------------------------------------------------------------------
 
-API_KEY = "7f4db7a9-c34e-478d-a799-fef77b9d1f78"  # your BALLDONTLIE All-Star key
+API_KEY = "7f4db7a9-c34e-478d-a799-fef77b9d1f78"  # BallDontLie ALL-STAR key
 BASE_URL = "https://api.balldontlie.io/v1"
 HEADERS = {"Authorization": API_KEY}
 
 HISTORY_FILE = "prop_history.csv"
+PARLAY_FILE = "parlay_history.csv"
 
 st.set_page_config(
     page_title="NBA Prop Research & Entry",
@@ -22,7 +26,7 @@ st.set_page_config(
 )
 
 # -------------------------------------------------------------------
-# STYLING (NEW COLORS + BETTER CONTRAST)
+# STYLING
 # -------------------------------------------------------------------
 
 CUSTOM_CSS = """
@@ -99,6 +103,22 @@ h1, h2, h3, h4, h5 {
   padding: 0.35rem;
   border: 1px solid rgba(148,163,184,0.4);
 }
+
+.hit-grade-A, .hit-grade-Aplus {
+  background-color: rgba(22,163,74,0.16);
+}
+
+.hit-grade-B, .hit-grade-Bplus {
+  background-color: rgba(34,197,94,0.08);
+}
+
+.hit-grade-C {
+  background-color: rgba(148,163,184,0.18);
+}
+
+.hit-grade-D, .hit-grade-F {
+  background-color: rgba(248,113,113,0.16);
+}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -107,7 +127,6 @@ st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 # PROP DEFINITIONS
 # -------------------------------------------------------------------
 
-# Map display label -> underlying key logic
 PROP_DEFS = {
     "Points": "pts",
     "Rebounds": "reb",
@@ -125,7 +144,7 @@ PROP_DEFS = {
 }
 
 # -------------------------------------------------------------------
-# HELPERS
+# GENERIC HELPERS
 # -------------------------------------------------------------------
 
 def fetch_json(endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -141,7 +160,6 @@ def fetch_json(endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[s
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_active_players() -> List[Dict[str, Any]]:
-    """Pull all active NBA players (cached)."""
     players = []
     cursor = None
     while True:
@@ -215,7 +233,6 @@ def parse_minutes(min_str: Any) -> float:
 
 
 def prop_value(stat: Dict[str, Any], key: str) -> float:
-    """Extract numeric value for a given prop key from a stat row."""
     pts = stat.get("pts", 0) or 0
     reb = stat.get("reb", 0) or 0
     ast = stat.get("ast", 0) or 0
@@ -376,8 +393,8 @@ def injuries_to_df(injuries: List[Dict[str, Any]]) -> pd.DataFrame:
 
 def get_headshot_url(first: str, last: str) -> str:
     """
-    Use community NBA headshots API (name-based).
-    This is best-effort; if the service is down, Streamlit will just fail to load the image.
+    Community headshot API based on name.
+    If it fails, Streamlit will just show a broken image placeholder.
     """
     def slug(s: str) -> str:
         s = s.lower()
@@ -400,12 +417,128 @@ def metric_card(col, label: str, value: Optional[float], extra: str = ""):
     )
 
 # -------------------------------------------------------------------
+# PROBABILITY / GRADING HELPERS
+# -------------------------------------------------------------------
+
+def normal_cdf(x: float) -> float:
+    return 0.5 * (1 + math.erf(x / math.sqrt(2)))
+
+
+def implied_prob_from_american(odds: Optional[float]) -> float:
+    if odds is None:
+        # fallback default close to -110
+        return 0.535
+    if odds < 0:
+        return -odds / (-odds + 100.0)
+    else:
+        return 100.0 / (odds + 100.0)
+
+
+def american_to_decimal(odds: float) -> float:
+    if odds < 0:
+        return 1 + 100.0 / -odds
+    else:
+        return 1 + odds / 100.0
+
+
+def parse_american_odds(raw: str) -> Optional[float]:
+    try:
+        s = str(raw).strip()
+        s = s.replace("+", "")
+        return float(s)
+    except Exception:
+        return None
+
+
+def grade_from_prob_edge(p_hit: Optional[float], edge: Optional[float]) -> str:
+    if p_hit is None or edge is None:
+        return "N/A"
+
+    if p_hit >= 0.65 and edge >= 0.12:
+        return "A+"
+    if p_hit >= 0.60 and edge >= 0.08:
+        return "A"
+    if p_hit >= 0.57 and edge >= 0.05:
+        return "B+"
+    if p_hit >= 0.55 and edge >= 0.02:
+        return "B"
+    if -0.02 <= edge <= 0.02:
+        return "C"
+    if edge < -0.06 and p_hit < 0.52:
+        return "F"
+    return "D"
+
+
+def compute_expected_and_grade(
+    values_recent: List[float],
+    l5: Optional[float],
+    l10: Optional[float],
+    l20: Optional[float],
+    season: Optional[float],
+    line: float,
+    side: str,
+    opp_def_score: float,
+    minutes_adj: float,
+    odds_float: Optional[float],
+) -> (Optional[float], Optional[float], Optional[float], str):
+    if not values_recent or season is None:
+        return None, None, None, "N/A"
+
+    # Fallbacks if any averages are missing
+    def safe(v, fallback):
+        return fallback if v is None else v
+
+    season_val = season
+    l10_val = safe(l10, season_val)
+    l5_val = safe(l5, l10_val)
+    l20_val = safe(l20, season_val)
+
+    # Base form weighting
+    base_form = (
+        0.45 * l10_val +
+        0.15 * l5_val +
+        0.10 * l20_val +
+        0.30 * season_val
+    )
+
+    # Opponent defensive score: 0 (elite) .. 1 (terrible)
+    matchup_adj = 1.0 + (opp_def_score - 0.5) * 0.16  # ±8%
+    # Minutes / injury adjustment: -1 .. +1
+    injury_adj = 1.0 + minutes_adj * 0.15  # ±15%
+
+    expected_stat = base_form * matchup_adj * injury_adj
+
+    # Volatility: std dev of recent values
+    if len(values_recent) > 1:
+        std = statistics.pstdev(values_recent)
+    else:
+        std = max(abs(values_recent[0]) / 3.0, 0.5)
+    std = max(std, 0.5)
+
+    # Hit probability
+    if side == "Over":
+        z = (line - expected_stat) / std
+        p_hit = 1.0 - normal_cdf(z)
+    else:
+        z = (line - expected_stat) / std
+        p_hit = normal_cdf(z)
+
+    p_hit = max(0.01, min(0.99, p_hit))
+
+    book_p = implied_prob_from_american(odds_float)
+    edge = p_hit - book_p
+    grade = grade_from_prob_edge(p_hit, edge)
+
+    return round(expected_stat, 2), round(p_hit, 3), round(edge, 3), grade
+
+# -------------------------------------------------------------------
 # HISTORY STORAGE
 # -------------------------------------------------------------------
 
 def empty_history_df() -> pd.DataFrame:
     return pd.DataFrame(
         columns=[
+            "RowID",
             "Date",
             "Player",
             "Player ID",
@@ -419,8 +552,13 @@ def empty_history_df() -> pd.DataFrame:
             "Season Avg",
             "Last 5 Avg",
             "Last 10 Avg",
+            "Last 20 Avg",
             "H2H Avg vs Opp",
             "Game ID",
+            "ExpectedStat",
+            "HitProb",
+            "Edge",
+            "Grade",
             "Actual",
             "Result",
         ]
@@ -432,11 +570,12 @@ def load_history() -> pd.DataFrame:
         return empty_history_df()
     try:
         df = pd.read_csv(HISTORY_FILE)
-        # make sure all expected columns exist
-        missing = [c for c in empty_history_df().columns if c not in df.columns]
-        for c in missing:
-            df[c] = None
-        return df
+        # ensure all columns exist
+        template_cols = list(empty_history_df().columns)
+        for col in template_cols:
+            if col not in df.columns:
+                df[col] = None
+        return df[template_cols]
     except Exception:
         return empty_history_df()
 
@@ -446,7 +585,7 @@ def save_history(df: pd.DataFrame) -> None:
 
 
 def evaluate_results(df: pd.DataFrame) -> pd.DataFrame:
-    """Update Actual + Result for any past-dated, ungraded props."""
+    """Update Actual + Result for past-dated, ungraded props."""
     today = dt.date.today()
     for idx, row in df.iterrows():
         result = str(row.get("Result", ""))
@@ -459,7 +598,7 @@ def evaluate_results(df: pd.DataFrame) -> pd.DataFrame:
             continue
 
         if game_date >= today:
-            continue  # game not finished yet
+            continue  # not graded yet
 
         try:
             player_id = int(row["Player ID"])
@@ -508,6 +647,45 @@ def evaluate_results(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 # -------------------------------------------------------------------
+# PARLAY HISTORY STORAGE
+# -------------------------------------------------------------------
+
+def empty_parlay_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        columns=[
+            "ParlayID",
+            "Name",
+            "Date",
+            "LegRowIDs",
+            "Stake",
+            "BookOdds",
+            "ParlayProb",
+            "BookImpliedProb",
+            "Edge",
+            "EV_per_unit",
+            "Grade",
+        ]
+    )
+
+
+def load_parlay_history() -> pd.DataFrame:
+    if not os.path.exists(PARLAY_FILE):
+        return empty_parlay_df()
+    try:
+        df = pd.read_csv(PARLAY_FILE)
+        template_cols = list(empty_parlay_df().columns)
+        for col in template_cols:
+            if col not in df.columns:
+                df[col] = None
+        return df[template_cols]
+    except Exception:
+        return empty_parlay_df()
+
+
+def save_parlay_history(df: pd.DataFrame) -> None:
+    df.to_csv(PARLAY_FILE, index=False)
+
+# -------------------------------------------------------------------
 # SESSION STATE
 # -------------------------------------------------------------------
 
@@ -526,18 +704,18 @@ if not players:
 
 player_labels, player_info = build_player_index(players)
 
-tab_form, tab_research, tab_history = st.tabs(
-    ["Prop Entry Form", "Player Research", "Prop History"]
+tab_form, tab_research, tab_history, tab_parlay = st.tabs(
+    ["Prop Entry Form", "Player Research", "Prop History", "Parlay Builder"]
 )
 
 # -------------------------------------------------------------------
-# TAB 1: PROP ENTRY FORM (with delete + headshot)
+# TAB 1: PROP ENTRY FORM (group by game, headshot, grading, delete)
 # -------------------------------------------------------------------
 
 with tab_form:
     st.subheader("Daily Prop Entry")
 
-    col_top1, col_top2 = st.columns([1.2, 1])
+    col_top1, col_top2 = st.columns([1.4, 1.2])
 
     with col_top1:
         game_date = st.date_input(
@@ -562,6 +740,45 @@ with tab_form:
         )
         odds_str = st.text_input("Odds (e.g. -115)", value="")
 
+    # Matchup difficulty & minutes influence
+    col_adj1, col_adj2 = st.columns([1, 1])
+    with col_adj1:
+        matchup_label = st.selectbox(
+            "Matchup difficulty (opponent defense vs this stat)",
+            options=[
+                "Very Tough",
+                "Tough",
+                "Neutral",
+                "Soft",
+                "Very Soft",
+            ],
+            index=2,
+            help="Rough adjustment for opponent defense vs this stat.",
+        )
+        matchup_map = {
+            "Very Tough": 0.1,
+            "Tough": 0.3,
+            "Neutral": 0.5,
+            "Soft": 0.7,
+            "Very Soft": 0.9,
+        }
+        opp_def_score = matchup_map[matchup_label]
+
+    with col_adj2:
+        minutes_adj = st.slider(
+            "Minutes / usage adjustment",
+            min_value=-1.0,
+            max_value=1.0,
+            value=0.0,
+            step=0.1,
+            help="Negative = risk of reduced minutes; Positive = likely minutes bump.",
+        )
+
+    expected_stat = None
+    hit_prob = None
+    edge = None
+    grade = "N/A"
+
     if player_label and player_label in player_info:
         info = player_info[player_label]
         player_id = info["id"]
@@ -575,7 +792,6 @@ with tab_form:
             st.image(
                 get_headshot_url(info["first_name"], info["last_name"]),
                 width=110,
-                caption="",
             )
             st.markdown("</div>", unsafe_allow_html=True)
 
@@ -618,6 +834,7 @@ with tab_form:
         season_avg = average_for_prop(stats_current, prop_key)
         last5_avg = last_n_average(stats_recent, prop_key, 5)
         last10_avg = last_n_average(stats_recent, prop_key, 10)
+        last20_avg = last_n_average(stats_recent, prop_key, 20)
 
         h2h_avg = None
         h2h_games = 0
@@ -633,10 +850,49 @@ with tab_form:
         metric_card(mcol3, "Last 10 avg", last10_avg)
         metric_card(mcol4, "H2H vs opp avg", h2h_avg, extra=f"{h2h_games} games")
 
+        # Projection and grading
+        values_recent = [
+            prop_value(s, prop_key)
+            for s in (stats_recent[-20:] if len(stats_recent) > 20 else stats_recent)
+        ]
+
+        odds_float = parse_american_odds(odds_str)
+
+        if values_recent and season_avg is not None:
+            expected_stat, hit_prob, edge, grade = compute_expected_and_grade(
+                values_recent,
+                last5_avg,
+                last10_avg,
+                last20_avg,
+                season_avg,
+                float(line_value),
+                side_choice,
+                opp_def_score,
+                minutes_adj,
+                odds_float,
+            )
+
+        st.markdown("##### Model view")
+        gcol1, gcol2, gcol3 = st.columns(3)
+        metric_card(gcol1, "Model projection", expected_stat)
+        metric_card(
+            gcol2,
+            "Hit probability",
+            None if hit_prob is None else f"{hit_prob*100:.1f}%",
+        )
+        metric_card(
+            gcol3,
+            "Edge vs odds",
+            None if edge is None else f"{edge*100:.1f}%",
+            extra=f"Grade: {grade}",
+        )
+
         st.markdown("---")
 
         if st.button("Add to prop sheet"):
+            row_id = str(uuid.uuid4())
             row = {
+                "RowID": row_id,
                 "Date": game_date.strftime("%Y-%m-%d"),
                 "Player": player_label,
                 "Player ID": player_id,
@@ -645,13 +901,18 @@ with tab_form:
                 "Home/Away": home_away,
                 "Prop": prop_choice,
                 "Side": side_choice,
-                "Line": line_value,
+                "Line": float(line_value),
                 "Odds": odds_str,
                 "Season Avg": season_avg,
                 "Last 5 Avg": last5_avg,
                 "Last 10 Avg": last10_avg,
+                "Last 20 Avg": last20_avg,
                 "H2H Avg vs Opp": h2h_avg,
                 "Game ID": game_id,
+                "ExpectedStat": expected_stat,
+                "HitProb": hit_prob,
+                "Edge": edge,
+                "Grade": grade,
                 "Actual": None,
                 "Result": "Pending",
             }
@@ -667,36 +928,32 @@ with tab_form:
 
     if st.session_state["prop_rows"]:
         df_props = pd.DataFrame(st.session_state["prop_rows"])
-        df_props_display = df_props.copy()
-        df_props_display.index.name = "Row"
+        df_display = df_props.copy()
+        df_display.index.name = "Row"
 
-        st.dataframe(df_props_display, use_container_width=True, height=400)
+        st.dataframe(df_display, use_container_width=True, height=350)
 
         # Delete row control
         del_col1, del_col2 = st.columns([2, 1])
         with del_col1:
             del_idx = st.selectbox(
                 "Select row to delete",
-                options=df_props_display.index,
-                format_func=lambda i: f"{i}: {df_props_display.loc[i, 'Player']} · "
-                                      f"{df_props_display.loc[i, 'Prop']} {df_props_display.loc[i, 'Side']} "
-                                      f"{df_props_display.loc[i, 'Line']}",
+                options=df_display.index,
+                format_func=lambda i: f"{i}: {df_display.loc[i, 'Player']} · "
+                                      f"{df_display.loc[i, 'Prop']} "
+                                      f"{df_display.loc[i, 'Side']} "
+                                      f"{df_display.loc[i, 'Line']}",
             )
         with del_col2:
             if st.button("Delete selected row"):
-                # remove from session
+                row_to_delete = df_props.loc[del_idx]
                 st.session_state["prop_rows"].pop(int(del_idx))
 
-                # also remove from history file by matching Date/Player/Prop/Line/Odds
                 hist_df = load_history()
-                mask = ~(
-                    (hist_df["Date"] == df_props.loc[del_idx, "Date"])
-                    & (hist_df["Player"] == df_props.loc[del_idx, "Player"])
-                    & (hist_df["Prop"] == df_props.loc[del_idx, "Prop"])
-                    & (hist_df["Line"] == float(df_props.loc[del_idx, "Line"]))
-                    & (hist_df["Odds"].astype(str) == str(df_props.loc[del_idx, "Odds"]))
-                )
-                save_history(hist_df[mask])
+                rid = row_to_delete.get("RowID")
+                if rid and "RowID" in hist_df.columns:
+                    hist_df = hist_df[hist_df["RowID"] != rid]
+                    save_history(hist_df)
 
                 try:
                     st.rerun()
@@ -710,6 +967,31 @@ with tab_form:
             file_name="daily_prop_sheet.csv",
             mime="text/csv",
         )
+
+        # Group by game
+        st.markdown("### Props grouped by game")
+        df_group = df_props.copy()
+        df_group["GameLabel"] = df_group.apply(
+            lambda r: f"{r['Date']} · {r['Team']} vs {r['Opponent']} ({r['Home/Away']})",
+            axis=1,
+        )
+        for game_label, gdf in df_group.groupby("GameLabel"):
+            with st.expander(game_label, expanded=False):
+                st.dataframe(
+                    gdf[
+                        [
+                            "Player",
+                            "Prop",
+                            "Side",
+                            "Line",
+                            "Odds",
+                            "ExpectedStat",
+                            "HitProb",
+                            "Grade",
+                        ]
+                    ],
+                    use_container_width=True,
+                )
     else:
         st.info("No props added yet. Add a prop above to start building your sheet.")
 
@@ -874,7 +1156,7 @@ with tab_research:
                     )
 
 # -------------------------------------------------------------------
-# TAB 3: PROP HISTORY (persistent CSV + grading)
+# TAB 3: PROP HISTORY
 # -------------------------------------------------------------------
 
 with tab_history:
@@ -926,5 +1208,131 @@ with tab_history:
             "Download full history CSV",
             data=csv_hist,
             file_name="prop_history.csv",
+            mime="text/csv",
+        )
+
+# -------------------------------------------------------------------
+# TAB 4: PARLAY BUILDER
+# -------------------------------------------------------------------
+
+with tab_parlay:
+    st.subheader("Parlay Builder")
+
+    if not st.session_state["prop_rows"]:
+        st.info("No props in the current sheet. Add props on the form tab first.")
+    else:
+        df_props = pd.DataFrame(st.session_state["prop_rows"])
+        df_props.index.name = "Row"
+
+        st.markdown("Select legs from your current prop sheet to form a parlay.")
+
+        leg_indices = st.multiselect(
+            "Select legs",
+            options=df_props.index.tolist(),
+            format_func=lambda i: f"{i}: {df_props.loc[i, 'Player']} · "
+                                  f"{df_props.loc[i, 'Prop']} "
+                                  f"{df_props.loc[i, 'Side']} {df_props.loc[i, 'Line']} "
+                                  f"({df_props.loc[i, 'Odds']})",
+        )
+
+        pcol1, pcol2, pcol3 = st.columns([1, 1, 1])
+        with pcol1:
+            parlay_name = st.text_input("Parlay name", value="")
+        with pcol2:
+            stake = st.number_input("Stake (units)", min_value=0.0, value=1.0, step=0.5)
+        with pcol3:
+            parlay_odds_str = st.text_input("Book parlay odds (e.g. +600)", value="")
+
+        parlay_prob = None
+        parlay_edge = None
+        ev_per_unit = None
+        parlay_grade = "N/A"
+
+        if leg_indices:
+            leg_probs = []
+            for i in leg_indices:
+                p = df_props.loc[i].get("HitProb")
+                if p is None or pd.isna(p):
+                    p = 0.5  # neutral if no model prob
+                leg_probs.append(float(p))
+
+            parlay_prob = 1.0
+            for p in leg_probs:
+                parlay_prob *= p
+            parlay_prob = max(0.0001, min(0.999, parlay_prob))
+
+            parlay_odds = parse_american_odds(parlay_odds_str)
+            book_p = implied_prob_from_american(parlay_odds)
+
+            if parlay_odds is not None:
+                dec = american_to_decimal(parlay_odds)
+                # EV per 1 unit stake
+                ev_per_unit = parlay_prob * (dec - 1.0) - (1.0 - parlay_prob)
+            else:
+                ev_per_unit = None
+
+            parlay_edge = parlay_prob - book_p
+            parlay_grade = grade_from_prob_edge(parlay_prob, parlay_edge)
+
+            st.markdown("##### Parlay model summary")
+            p_mcol1, p_mcol2, p_mcol3, p_mcol4 = st.columns(4)
+            metric_card(
+                p_mcol1,
+                "Model parlay prob",
+                None if parlay_prob is None else f"{parlay_prob*100:.1f}%",
+            )
+            metric_card(
+                p_mcol2,
+                "Book implied prob",
+                None if book_p is None else f"{book_p*100:.1f}%",
+            )
+            metric_card(
+                p_mcol3,
+                "Edge",
+                None if parlay_edge is None else f"{parlay_edge*100:.1f}%",
+            )
+            metric_card(
+                p_mcol4,
+                "Parlay EV (per unit)",
+                None if ev_per_unit is None else round(ev_per_unit, 3),
+                extra=f"Grade: {parlay_grade}",
+            )
+
+            if st.button("Save parlay"):
+                parlay_id = str(uuid.uuid4())
+                leg_row_ids = ";".join(
+                    [str(df_props.loc[i].get("RowID")) for i in leg_indices]
+                )
+
+                row = {
+                    "ParlayID": parlay_id,
+                    "Name": parlay_name,
+                    "Date": dt.date.today().strftime("%Y-%m-%d"),
+                    "LegRowIDs": leg_row_ids,
+                    "Stake": stake,
+                    "BookOdds": parlay_odds_str,
+                    "ParlayProb": parlay_prob,
+                    "BookImpliedProb": book_p,
+                    "Edge": parlay_edge,
+                    "EV_per_unit": ev_per_unit,
+                    "Grade": parlay_grade,
+                }
+
+                p_hist = load_parlay_history()
+                p_hist = pd.concat([p_hist, pd.DataFrame([row])], ignore_index=True)
+                save_parlay_history(p_hist)
+                st.success("Parlay saved to history.")
+
+    st.markdown("### Parlay history")
+    p_hist = load_parlay_history()
+    if p_hist.empty:
+        st.info("No parlays saved yet.")
+    else:
+        st.dataframe(p_hist, use_container_width=True, height=350)
+        csv_parlay = p_hist.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "Download parlay history CSV",
+            data=csv_parlay,
+            file_name="parlay_history.csv",
             mime="text/csv",
         )
