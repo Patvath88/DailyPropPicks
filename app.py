@@ -28,100 +28,95 @@ st.set_page_config(
 # -------------------------------------------------------------------
 # STYLING
 # -------------------------------------------------------------------
-
 CUSTOM_CSS = """
 <style>
-:root {
-  --bg-main: #020617;
-  --bg-panel: #020617;
-  --accent: #6366f1;
-  --accent-soft: rgba(99,102,241,0.25);
-  --metric-bg: #020617;
-  --metric-border: #1e293b;
-  --metric-shadow: 0 0 22px rgba(15,23,42,0.9);
-  --metric-tag: #9ca3af;
-  --metric-text: #f9fafb;
+:root{
+  --bg:#020617;
+  --panel:#071026;
+  --accent:#6366f1;
+  --muted:#9ca3af;
+  --text:#f8fafc;
+  --card:#0b1220;
+  --card-border: rgba(148,163,184,0.08);
 }
 
+/* Page & container */
 body {
-  background: radial-gradient(circle at top, #111827 0, #020617 48%, #000000 100%);
-  color: #e5e7eb;
+  background: linear-gradient(180deg, #071021 0%, #020617 80%);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial;
+  -webkit-font-smoothing: antialiased;
 }
 
-section.main > div {
-  padding-top: 0rem;
-}
-
+/* Make the main block a little denser on mobile */
 .block-container {
-  padding-top: 1rem;
+  padding-top: 0.75rem;
+  padding-left: 0.6rem;
+  padding-right: 0.6rem;
 }
 
-h1, h2, h3, h4, h5 {
-  color: #f9fafb;
-}
-
-.stTabs [data-baseweb="tab-list"] {
-  gap: 0.5rem;
-}
-
+/* Tabs */
+.stTabs [data-baseweb="tab-list"] { gap: 0.4rem; margin-bottom: 0.6rem; }
 .stTabs [data-baseweb="tab"] {
-  background-color: rgba(15,23,42,0.9);
-  border-radius: 999px;
-  padding: 0.4rem 0.9rem;
-  border: 1px solid rgba(148,163,184,0.35);
+  padding: 0.36rem 0.8rem; border-radius: 999px; font-size: 0.92rem;
+  background: rgba(255,255,255,0.02); border: 1px solid rgba(148,163,184,0.04);
 }
 
-.stTabs [aria-selected="true"] {
-  background: radial-gradient(circle at top left, var(--accent-soft), #020617);
-  border-color: var(--accent);
-}
-
+/* Metric cards - bigger and higher contrast on mobile */
 .metric-card {
-  background: radial-gradient(circle at top left, rgba(99,102,241,0.18), var(--metric-bg));
-  border-radius: 0.85rem;
-  padding: 0.6rem 0.9rem;
-  border: 1px solid var(--metric-border);
-  box-shadow: var(--metric-shadow);
+  background: linear-gradient(180deg, rgba(99,102,241,0.12), rgba(2,6,23,0.7));
+  border-radius: 12px;
+  padding: 12px;
+  margin-bottom: 10px;
+  border: 1px solid var(--card-border);
+}
+.metric-tag { font-size: 0.72rem; color: var(--muted); letter-spacing: 0.06em; }
+.metric-value { font-size: 1.4rem; font-weight: 700; color: var(--text); margin-top: 6px; }
+
+/* Player photo card scaled for phone */
+.player-photo-card { border-radius: 12px; padding: 6px; display:inline-block; margin-bottom:6px; }
+.player-photo-card img { border-radius: 8px; width: 110px; height: auto; object-fit: cover; }
+
+/* Buttons full width on mobile for easy tap */
+div.stButton > button, button[kind] {
+  min-height:44px !important;
+  padding: 10px 14px !important;
+  font-size: 15px !important;
 }
 
-.metric-tag {
-  font-size: 0.72rem;
-  text-transform: uppercase;
-  color: var(--metric-tag);
-  letter-spacing: 0.08em;
+/* Inputs full width and with more spacing */
+input, select, textarea {
+  font-size: 15px !important;
+  padding: 10px !important;
 }
 
-.metric-value {
-  font-size: 1.45rem;
-  font-weight: 650;
-  color: var(--metric-text);
+/* Dataframe container to avoid tiny fonts on mobile */
+.stDataFrame table {
+  font-size: 13px;
 }
 
-.player-photo-card {
-  background: radial-gradient(circle at top, rgba(99,102,241,0.4), #020617);
-  border-radius: 1rem;
-  padding: 0.35rem;
-  border: 1px solid rgba(148,163,184,0.4);
+/* Expanders: make them touch-friendly */
+details > summary {
+  padding: 10px 8px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.01);
+  margin-bottom: 8px;
 }
 
-.hit-grade-A, .hit-grade-Aplus {
-  background-color: rgba(22,163,74,0.16);
+/* Responsive tweaks via media queries */
+@media (max-width: 800px) {
+  .metric-card { padding: 14px; }
+  .metric-value { font-size: 1.6rem; }
+  .player-photo-card img { width: 96px; }
+  .block-container { padding-left: 8px; padding-right: 8px; }
 }
 
-.hit-grade-B, .hit-grade-Bplus {
-  background-color: rgba(34,197,94,0.08);
-}
-
-.hit-grade-C {
-  background-color: rgba(148,163,184,0.18);
-}
-
-.hit-grade-D, .hit-grade-F {
-  background-color: rgba(248,113,113,0.16);
+/* Desktop keep look */
+@media (min-width: 1200px) {
+  .player-photo-card img { width: 140px; }
 }
 </style>
 """
-st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 # -------------------------------------------------------------------
 # PROP DEFINITIONS
@@ -699,295 +694,122 @@ tab_form, tab_research, tab_history, tab_parlay = st.tabs(
 # TAB 1: PROP ENTRY FORM
 # -------------------------------------------------------------------
 
+# ---------- Mobile-first Prop Entry Form ----------
 with tab_form:
     st.subheader("Daily Prop Entry")
 
-    col_top1, col_top2 = st.columns([1.4, 1.2])
+    # Use a Streamlit form so mobile users can fill quickly and submit with a single tap.
+    with st.form(key="prop_entry_form", clear_on_submit=False):
+        st.markdown("**Select slate date & player**")
+        game_date = st.date_input("Game date", value=dt.date.today())
 
-    with col_top1:
-        game_date = st.date_input(
-            "Game date",
-            value=dt.date.today(),
-            help="Date of the game for this prop.",
-        )
-        player_label = st.selectbox(
-            "Player",
-            options=[""] + player_labels,
-            index=0,
-            help="Search any active NBA player.",
-        )
+        # Player search: text input then selectbox (helps on mobile)
+        player_search = st.text_input("Search player (first or last)", placeholder="Type few letters...")
+        player_options = [""]  # default blank
+        player_info_map = {}
+        if player_search and len(player_search.strip()) >= 2:
+            # lightweight search using cached active players
+            matching = [lab for lab in player_labels if player_search.strip().lower() in lab.lower()]
+            player_options = [""] + matching
+        player_label = st.selectbox("Player", options=player_options, index=0)
 
-    with col_top2:
-        prop_choice = st.selectbox("Prop", options=list(PROP_DEFS.keys()), index=0)
-        side_choice = st.selectbox("Side", options=["Over", "Under"], index=0)
-        line_value = st.number_input(
-            "Prop line (number)",
-            step=0.5,
-            format="%.2f",
-        )
-        odds_str = st.text_input("Odds (e.g. -115)", value="")
-
-    col_adj1, col_adj2 = st.columns([1, 1])
-    with col_adj1:
-        matchup_label = st.selectbox(
-            "Matchup difficulty (opponent defense vs this stat)",
-            options=[
-                "Very Tough",
-                "Tough",
-                "Neutral",
-                "Soft",
-                "Very Soft",
-            ],
-            index=2,
-            help="Rough adjustment for opponent defense vs this stat.",
-        )
-        matchup_map = {
-            "Very Tough": 0.1,
-            "Tough": 0.3,
-            "Neutral": 0.5,
-            "Soft": 0.7,
-            "Very Soft": 0.9,
-        }
-        opp_def_score = matchup_map[matchup_label]
-
-    with col_adj2:
-        minutes_adj = st.slider(
-            "Minutes / usage adjustment",
-            min_value=-1.0,
-            max_value=1.0,
-            value=0.0,
-            step=0.1,
-            help="Negative = risk of reduced minutes; Positive = likely minutes bump.",
-        )
-
-    expected_stat = None
-    hit_prob = None
-    edge = None
-    grade = "N/A"
-
-    if player_label and player_label in player_info:
-        info = player_info[player_label]
-        player_id = info["id"]
-        team_id = info["team_id"]
-        team_name = info["team_name"]
-        team_abbr = info["team_abbr"]
-
-        img_col, text_col = st.columns([0.9, 2.6])
-        with img_col:
-            st.markdown('<div class="player-photo-card">', unsafe_allow_html=True)
-            st.image(
-                get_headshot_url(info["first_name"], info["last_name"]),
-                width=110,
-            )
+        # If chosen, show headshot next to details (stacked)
+        if player_label and player_label in player_info:
+            info = player_info[player_label]
+            st.markdown(f"<div style='display:flex;align-items:center;gap:12px'>", unsafe_allow_html=True)
+            st.markdown(f"<div class='player-photo-card'><img src='{get_headshot_url(info['first_name'], info['last_name'])}'/></div>", unsafe_allow_html=True)
+            st.markdown(f"<div><b>{info['first_name']} {info['last_name']}</b><br/>{info['team_name']} ({info['team_abbr']})</div>", unsafe_allow_html=True)
             st.markdown("</div>", unsafe_allow_html=True)
 
-        with text_col:
-            st.markdown(
-                f"**{info['first_name']} {info['last_name']}**  \n"
-                f"{team_name} ({team_abbr}) · ID `{player_id}`"
-            )
+        st.markdown("**Pick & line**")
+        prop_choice = st.selectbox("Prop", options=list(PROP_DEFS.keys()), index=0)
+        side_choice = st.selectbox("Side", options=["Over", "Under"], index=0)
+        line_value = st.number_input("Line (number)", step=0.5, format="%.2f")
+        odds_str = st.text_input("Odds (optional, e.g. -115)", value="")
 
-        game = get_team_game_on_date(team_id, game_date)
-        opp_name = "Unknown"
-        home_away = "N/A"
-        opp_id = None
-        game_id = None
-
-        if game:
-            opp_team, home_away = get_opponent_from_game(game, team_id)
-            opp_name = opp_team["full_name"]
-            opp_id = opp_team["id"]
-            game_id = game["id"]
-            st.markdown(
-                f"**Matchup:** {team_abbr} vs {opp_team['abbreviation']} "
-                f"({home_away} for {team_abbr}) · Game ID `{game_id}`"
-            )
-        else:
-            st.warning("No scheduled game found for this team on that date.")
-
-        today = dt.date.today()
-        current_season = get_current_season(today)
-        prev_season = current_season - 1
-
-        stats_current = get_player_stats_for_season(player_id, current_season)
-        stats_prev = get_player_stats_for_season(player_id, prev_season)
-        stats_recent = sorted(stats_prev + stats_current, key=lambda s: s["game"]["date"])
-
-        prop_key = PROP_DEFS[prop_choice]
-
-        season_avg = average_for_prop(stats_current, prop_key)
-        last5_avg = last_n_average(stats_recent, prop_key, 5)
-        last10_avg = last_n_average(stats_recent, prop_key, 10)
-        last20_avg = last_n_average(stats_recent, prop_key, 20)
-
-        h2h_avg = None
-        h2h_games = 0
-        if opp_id is not None:
-            stats_h2h = h2h_stats_vs_team(stats_recent, opp_id)
-            h2h_games = len(stats_h2h)
-            h2h_avg = average_for_prop(stats_h2h, prop_key)
-
-        st.markdown("##### Recent form for this prop")
-        mcol1, mcol2, mcol3, mcol4 = st.columns(4)
-        metric_card(mcol1, "Season avg", season_avg)
-        metric_card(mcol2, "Last 5 avg", last5_avg)
-        metric_card(mcol3, "Last 10 avg", last10_avg)
-        metric_card(mcol4, "H2H vs opp avg", h2h_avg, extra=f"{h2h_games} games")
-
-        values_recent = [
-            prop_value(s, prop_key)
-            for s in (stats_recent[-20:] if len(stats_recent) > 20 else stats_recent)
-        ]
-
-        odds_float = parse_american_odds(odds_str)
-
-        if values_recent and season_avg is not None and line_value is not None:
-            expected_stat, hit_prob, edge, grade = compute_expected_and_grade(
-                values_recent,
-                last5_avg,
-                last10_avg,
-                last20_avg,
-                season_avg,
-                float(line_value),
-                side_choice,
-                opp_def_score,
-                minutes_adj,
-                odds_float,
-            )
-
-        st.markdown("##### Model view")
-        gcol1, gcol2, gcol3 = st.columns(3)
-        metric_card(gcol1, "Model projection", expected_stat)
-        metric_card(
-            gcol2,
-            "Hit probability",
-            None if hit_prob is None else f"{hit_prob*100:.1f}%",
+        st.markdown("**Matchup & minutes**")
+        matchup_label = st.selectbox(
+            "Opponent matchup difficulty",
+            options=["Very Tough", "Tough", "Neutral", "Soft", "Very Soft"], index=2
         )
-        metric_card(
-            gcol3,
-            "Edge vs odds",
-            None if edge is None else f"{edge*100:.1f}%",
-            extra=f"Grade: {grade}",
-        )
+        matchup_map = {"Very Tough":0.1,"Tough":0.3,"Neutral":0.5,"Soft":0.7,"Very Soft":0.9}
+        opp_def_score = matchup_map[matchup_label]
 
+        minutes_adj = st.slider("Minutes / usage adj", min_value=-1.0, max_value=1.0, value=0.0, step=0.1)
+
+        # Show model snapshot inline (updated on submit)
         st.markdown("---")
+        st.markdown("Model preview (updated when you press Add to sheet)")
 
-        if st.button("Add to prop sheet"):
+        # Buttons row: Add / Clear
+        col_btn_left, col_btn_right = st.columns([1,1])
+        with col_btn_left:
+            add_pressed = st.form_submit_button("➕ Add to prop sheet")
+        with col_btn_right:
+            clear_pressed = st.form_submit_button("🧹 Clear inputs")
+
+    # handle form submit actions (outside the 'with' block for clarity)
+    if 'add_pressed' in locals() and add_pressed:
+        # run the same logic you already have to compute averages, expected_stat, hit_prob, edge, grade
+        if player_label and player_label in player_info:
+            info = player_info[player_label]
+            player_id = info["id"]
+            team_id = info["team_id"]
+            team_name = info["team_name"]
+            team_abbr = info["team_abbr"]
+
+            game = get_team_game_on_date(team_id, game_date)
+            opp_name = "Unknown"; home_away="N/A"; opp_id=None; game_id=None
+            if game:
+                opp_team, home_away = get_opponent_from_game(game, team_id)
+                opp_name = opp_team["full_name"]; opp_id = opp_team["id"]; game_id = game["id"]
+
+            today = dt.date.today()
+            current_season = get_current_season(today)
+            prev_season = current_season - 1
+
+            stats_current = get_player_stats_for_season(player_id, current_season)
+            stats_prev = get_player_stats_for_season(player_id, prev_season)
+            stats_recent = sorted(stats_prev + stats_current, key=lambda s: s["game"]["date"])
+
+            prop_key = PROP_DEFS[prop_choice]
+            season_avg = average_for_prop(stats_current, prop_key)
+            last5_avg = last_n_average(stats_recent, prop_key, 5)
+            last10_avg = last_n_average(stats_recent, prop_key, 10)
+            last20_avg = last_n_average(stats_recent, prop_key, 20)
+
+            values_recent = [prop_value(s, prop_key) for s in (stats_recent[-20:] if len(stats_recent)>20 else stats_recent)]
+            odds_float = parse_american_odds(odds_str)
+
+            if values_recent and season_avg is not None:
+                expected_stat, hit_prob, edge, grade = compute_expected_and_grade(
+                    values_recent, last5_avg, last10_avg, last20_avg, season_avg,
+                    float(line_value), side_choice, opp_def_score, minutes_adj, odds_float
+                )
+            else:
+                expected_stat = hit_prob = edge = grade = None
+
+            # add to session and history (same as before)
             row_id = str(uuid.uuid4())
             row = {
-                "RowID": row_id,
-                "Date": game_date.strftime("%Y-%m-%d"),
-                "Player": player_label,
-                "Player ID": player_id,
-                "Team": team_name,
-                "Opponent": opp_name,
-                "Home/Away": home_away,
-                "Prop": prop_choice,
-                "Side": side_choice,
-                "Line": float(line_value),
-                "Odds": odds_str,
-                "Season Avg": season_avg,
-                "Last 5 Avg": last5_avg,
-                "Last 10 Avg": last10_avg,
-                "Last 20 Avg": last20_avg,
-                "H2H Avg vs Opp": h2h_avg,
-                "Game ID": game_id,
-                "ExpectedStat": expected_stat,
-                "HitProb": hit_prob,
-                "Edge": edge,
-                "Grade": grade,
-                "Actual": None,
-                "Result": "Pending",
+                "RowID": row_id, "Date": game_date.strftime("%Y-%m-%d"),
+                "Player": player_label, "Player ID": player_id, "Team": team_name,
+                "Opponent": opp_name, "Home/Away": home_away, "Prop": prop_choice,
+                "Side": side_choice, "Line": float(line_value), "Odds": odds_str,
+                "Season Avg": season_avg, "Last 5 Avg": last5_avg, "Last 10 Avg": last10_avg,
+                "Last 20 Avg": last20_avg, "H2H Avg vs Opp": None, "Game ID": game_id,
+                "ExpectedStat": expected_stat, "HitProb": hit_prob, "Edge": edge,
+                "Grade": grade, "Actual": None, "Result":"Pending"
             }
             st.session_state["prop_rows"].append(row)
-
             hist_df = load_history()
             hist_df = pd.concat([hist_df, pd.DataFrame([row])], ignore_index=True)
             save_history(hist_df)
+            st.success("Prop saved — scroll to Prop History or Parlay Builder to continue.")
 
-            st.success("Prop added to sheet and history.")
-
-    st.markdown("### Current prop sheet")
-
-    if st.session_state["prop_rows"]:
-        df_props = pd.DataFrame(st.session_state["prop_rows"])
-
-        # Ensure every prop row has a real RowID (fixes nan leg IDs)
-        if "RowID" not in df_props.columns:
-            df_props["RowID"] = [str(uuid.uuid4()) for _ in range(len(df_props))]
-            for i, rid in df_props["RowID"].items():
-                st.session_state["prop_rows"][i]["RowID"] = rid
-        else:
-            for i in df_props.index:
-                if pd.isna(df_props.at[i, "RowID"]) or df_props.at[i, "RowID"] == "":
-                    new_id = str(uuid.uuid4())
-                    df_props.at[i, "RowID"] = new_id
-                    st.session_state["prop_rows"][i]["RowID"] = new_id
-
-        df_display = df_props.copy()
-        df_display.index.name = "Row"
-
-        st.dataframe(df_display, use_container_width=True, height=350)
-
-        del_col1, del_col2 = st.columns([2, 1])
-        with del_col1:
-            del_idx = st.selectbox(
-                "Select row to delete",
-                options=df_display.index,
-                format_func=lambda i: f"{i}: {df_display.loc[i, 'Player']} · "
-                                      f"{df_display.loc[i, 'Prop']} "
-                                      f"{df_display.loc[i, 'Side']} "
-                                      f"{df_display.loc[i, 'Line']}",
-            )
-        with del_col2:
-            if st.button("Delete selected row"):
-                row_to_delete = df_props.loc[del_idx]
-                st.session_state["prop_rows"].pop(int(del_idx))
-
-                hist_df = load_history()
-                rid = row_to_delete.get("RowID")
-                if rid and "RowID" in hist_df.columns:
-                    hist_df = hist_df[hist_df["RowID"] != rid]
-                    save_history(hist_df)
-
-                try:
-                    st.rerun()
-                except Exception:
-                    st.experimental_rerun()
-
-        csv = df_props.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "Download CSV",
-            data=csv,
-            file_name="daily_prop_sheet.csv",
-            mime="text/csv",
-        )
-
-        st.markdown("### Props grouped by game")
-        df_group = df_props.copy()
-        df_group["GameLabel"] = df_group.apply(
-            lambda r: f"{r['Date']} · {r['Team']} vs {r['Opponent']} ({r['Home/Away']})",
-            axis=1,
-        )
-        for game_label, gdf in df_group.groupby("GameLabel"):
-            with st.expander(game_label, expanded=False):
-                st.dataframe(
-                    gdf[
-                        [
-                            "Player",
-                            "Prop",
-                            "Side",
-                            "Line",
-                            "Odds",
-                            "ExpectedStat",
-                            "HitProb",
-                            "Grade",
-                        ]
-                    ],
-                    use_container_width=True,
-                )
-    else:
-        st.info("No props added yet. Add a prop above to start building your sheet.")
+    if 'clear_pressed' in locals() and clear_pressed:
+        # minimal clear: not clearing session, just telling user to reload form
+        st.experimental_rerun()
 
 # -------------------------------------------------------------------
 # TAB 2: PLAYER RESEARCH
