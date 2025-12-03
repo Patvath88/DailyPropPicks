@@ -698,10 +698,10 @@ with tab_form:
             try:
                 first = info["first_name"]; last = info["last_name"]
                 head_bytes = try_headshot_by_name(first,last)
-  if head_bytes:
+    if head_bytes:
     b64 = base64.b64encode(head_bytes).decode("utf-8")
-      st.markdown(f"<div class='player-photo-card'><img src='data:image/png;base64,{b64}'/></div>", unsafe_allow_html=True)
-  else:
+    st.markdown(f"<div class='player-photo-card'><img src='data:image/png;base64,{b64}'/></div>", unsafe_allow_html=True)
+    else:
     # fallback silhouette
     b64 = base64.b64encode(SILHOUETTE_BYTES).decode("utf-8")
     st.markdown(f"<div class='player-photo-card'><img src='data:image/png;base64,{b64}'/></div>", unsafe_allow_html=True)
