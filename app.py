@@ -12,6 +12,7 @@ import math
 import uuid
 import time
 import json
+import base64
 import statistics
 import datetime as dt
 from pathlib import Path
@@ -697,7 +698,11 @@ with tab_form:
             try:
                 first = info["first_name"]; last = info["last_name"]
                 head_bytes = try_headshot_by_name(first,last)
-                st.markdown(f"<div class='player-photo-card'><img src='data:image/png;base64,{BytesIO(head_bytes).getvalue().hex()[:1]}'/></div>", unsafe_allow_html=True)
+
+# old (broken) line example to replace:
+st.markdown(f"<div class='player-photo-card'><img src='data:image/png;base64,{BytesIO(head_bytes).getvalue().hex()[:1]}'/></div>", unsafe_allow_html=True)
+
+
             except Exception:
                 st.markdown(f"<div class='player-photo-card'><img src='data:image/png;base64,'/></div>", unsafe_allow_html=True)
             st.markdown(f"<div><b>{info['first_name']} {info['last_name']}</b><br/>{info['team_name']} ({info['team_abbr']})</div>", unsafe_allow_html=True)
