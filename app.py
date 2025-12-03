@@ -1,9 +1,12 @@
-# app.py — Mobile-first NBA Prop Research & Entry (automatic matchup & minutes)
+# app.py — Mobile-first NBA Prop Research & Entry (full patched)
 import os
 import math
 import uuid
+import json
+import time
 import statistics
 import datetime as dt
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 import requests
@@ -14,12 +17,14 @@ import streamlit as st
 # CONFIG
 # -------------------------------------------------------------------
 
-API_KEY = "7f4db7a9-c34e-478d-a799-fef77b9d1f78"  # BallDontLie ALL-STAR key
+API_KEY = "7f4db7a9-c34e-478d-a799-fef77b9d1f78"  # BallDontLie ALL-STAR key (replace if needed)
 BASE_URL = "https://api.balldontlie.io/v1"
 HEADERS = {"Authorization": API_KEY}
 
 HISTORY_FILE = "prop_history.csv"
 PARLAY_FILE = "parlay_history.csv"
+_PLAYERS_CACHE = Path("players_cache.json")
+_PLAYERS_CACHE_TTL = 24 * 3600  # seconds
 
 st.set_page_config(
     page_title="NBA Prop Research & Entry",
@@ -142,8 +147,32 @@ PROP_DEFS = {
 }
 
 # -------------------------------------------------------------------
-# GENERIC HELPERS
+# NETWORK & PLAYER CACHE HELPERS (avoids 429)
 # -------------------------------------------------------------------
+
+def _write_players_cache(players: List[Dict[str,Any]]):
+    try:
+        payload = {"ts": int(time.time()), "players": players}
+        _PLAYERS_CACHE.write_text(json.dumps(payload))
+    except Exception:
+        pass
+
+def _read_players_cache() -> List[Dict[str,Any]]:
+    try:
+        if not _PLAYERS_CACHE.exists():
+            return []
+        payload = json.loads(_PLAYERS_CACHE.read_text())
+        ts = payload.get("ts", 0)
+        if int(time.time()) - ts > _PLAYERS_CACHE_TTL:
+            return []
+        return payload.get("players", [])
+    except Exception:
+        return []
+
+def _backoff_sleep(attempt: int):
+    base = min(8, 2 ** attempt)
+    jitter = base * 0.25 * (0.5 + (time.time() % 1))
+    time.sleep(base * 0.5 + jitter)
 
 def fetch_json(endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     url = f"{BASE_URL}/{endpoint}"
@@ -151,51 +180,106 @@ def fetch_json(endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[s
         resp = requests.get(url, headers=HEADERS, params=params, timeout=10)
         resp.raise_for_status()
         return resp.json()
+    except requests.HTTPError as e:
+        # surface helpful message for 429
+        if resp := getattr(e, "response", None):
+            if resp.status_code == 429:
+                st.error(f"API error: 429 Too Many Requests for url: {url} — reducing requests, please search players when needed.")
+            else:
+                st.error(f"API error on {endpoint}: {resp.status_code} {resp.reason}")
+        else:
+            st.error(f"API error on {endpoint}: {e}")
+        # raise to allow callers to backoff
+        raise
     except Exception as e:
         st.error(f"API error on {endpoint}: {e}")
-        return {"data": [], "meta": {}}
-
+        raise
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_active_players() -> List[Dict[str, Any]]:
+    """
+    Try to load a single page of players (lightweight). If the API rejects (429),
+    fall back to a local cached list. Avoid paging through the whole API.
+    """
+    cached = _read_players_cache()
+    if cached:
+        return cached
+
     players = []
-    page = 1
-    while True:
-        params = {"per_page": 100, "page": page}
-        data = fetch_json("players", params)
-        items = data.get("data", [])
-        players.extend(items)
-        if len(items) < 100:
-            break
-        page += 1
-    # filter active players if available (some tiers may include active flag)
-    return players
+    attempt = 0
+    max_attempts = 2
+    while attempt < max_attempts:
+        try:
+            params = {"per_page": 100, "page": 1}
+            data = fetch_json("players", params)
+            batch = data.get("data", [])
+            players.extend(batch)
+            if players:
+                _write_players_cache(players)
+            return players
+        except Exception:
+            attempt += 1
+            _backoff_sleep(attempt)
+    return _read_players_cache()
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def search_players(query: str) -> List[Dict[str, Any]]:
+    """
+    Lightweight on-demand search against /players?search=<q>.
+    Called when user types 2+ letters; cached short-term.
+    """
+    q = str(query or "").strip()
+    if not q:
+        return []
 
-def build_player_index(players: List[Dict[str, Any]]):
+    attempt = 0
+    max_attempts = 3
+    while attempt < max_attempts:
+        try:
+            params = {"per_page": 50, "search": q}
+            data = fetch_json("players", params)
+            results = data.get("data", [])
+            if results:
+                existing = _read_players_cache()
+                combined = {p["id"]: p for p in existing}
+                for r in results:
+                    combined[r["id"]] = r
+                merged = list(combined.values())[:400]
+                _write_players_cache(merged)
+            return results
+        except Exception:
+            attempt += 1
+            _backoff_sleep(attempt)
+    return []
+
+def build_player_index_from_list(players: List[Dict[str, Any]]):
     labels = []
     info = {}
     for p in players:
+        if not p:
+            continue
         team = p.get("team") or {}
-        label = f"{p['first_name']} {p['last_name']} ({team.get('abbreviation', 'FA')})"
+        label = f"{p.get('first_name','')} {p.get('last_name','')} ({team.get('abbreviation', 'FA')})"
         labels.append(label)
         info[label] = {
-            "id": p["id"],
-            "first_name": p["first_name"],
-            "last_name": p["last_name"],
+            "id": p.get("id"),
+            "first_name": p.get("first_name"),
+            "last_name": p.get("last_name"),
             "team_id": team.get("id"),
             "team_name": team.get("full_name"),
             "team_abbr": team.get("abbreviation"),
         }
-    labels = sorted(labels)
+    labels = sorted(list(set(labels)))
     return labels, info
 
+# -------------------------------------------------------------------
+# BASIC STATS HELPERS
+# -------------------------------------------------------------------
 
 def get_current_season(today: Optional[dt.date] = None) -> int:
     if today is None:
         today = dt.date.today()
     return today.year if today.month >= 10 else today.year - 1
-
 
 @st.cache_data(ttl=900, show_spinner=False)
 def get_player_stats_for_season(player_id: int, season: int) -> List[Dict[str, Any]]:
@@ -208,7 +292,10 @@ def get_player_stats_for_season(player_id: int, season: int) -> List[Dict[str, A
             "per_page": 100,
             "page": page,
         }
-        data = fetch_json("stats", params)
+        try:
+            data = fetch_json("stats", params)
+        except Exception:
+            break
         batch = data.get("data", [])
         stats.extend(batch)
         if len(batch) < 100:
@@ -216,19 +303,20 @@ def get_player_stats_for_season(player_id: int, season: int) -> List[Dict[str, A
         page += 1
     return stats
 
-
 def parse_minutes(min_str: Any) -> float:
     if not min_str:
         return 0.0
     s = str(min_str)
     if ":" in s:
-        m, sec = s.split(":")
-        return int(m) + int(sec) / 60.0
+        try:
+            m, sec = s.split(":")
+            return int(m) + int(sec) / 60.0
+        except Exception:
+            return 0.0
     try:
         return float(s)
     except Exception:
         return 0.0
-
 
 def prop_value(stat: Dict[str, Any], key: str) -> float:
     pts = stat.get("pts", 0) or 0
@@ -267,7 +355,6 @@ def prop_value(stat: Dict[str, Any], key: str) -> float:
         return parse_minutes(stat.get("min"))
     return 0.0
 
-
 def average_for_prop(stats: List[Dict[str, Any]], key: str) -> Optional[float]:
     if not stats:
         return None
@@ -276,7 +363,6 @@ def average_for_prop(stats: List[Dict[str, Any]], key: str) -> Optional[float]:
         return None
     return round(sum(vals) / len(vals), 1)
 
-
 def last_n_average(stats: List[Dict[str, Any]], key: str, n: int) -> Optional[float]:
     if not stats:
         return None
@@ -284,21 +370,21 @@ def last_n_average(stats: List[Dict[str, Any]], key: str, n: int) -> Optional[fl
     slice_ = stats_sorted[-n:]
     return average_for_prop(slice_, key)
 
-
 def get_most_recent_stat(stats: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not stats:
         return None
     return max(stats, key=lambda s: s["game"]["date"])
 
-
 @st.cache_data(ttl=900, show_spinner=False)
 def get_team_game_on_date(team_id: int, date: dt.date) -> Optional[Dict[str, Any]]:
     date_str = date.strftime("%Y-%m-%d")
     params = {"team_ids[]": team_id, "dates[]": date_str, "per_page": 100}
-    data = fetch_json("games", params)
+    try:
+        data = fetch_json("games", params)
+    except Exception:
+        return None
     games = data.get("data", [])
     return games[0] if games else None
-
 
 @st.cache_data(ttl=900, show_spinner=False)
 def get_team_games_for_season(team_id: int, season: int) -> List[Dict[str, Any]]:
@@ -311,14 +397,16 @@ def get_team_games_for_season(team_id: int, season: int) -> List[Dict[str, Any]]
             "per_page": 100,
             "page": page,
         }
-        data = fetch_json("games", params)
+        try:
+            data = fetch_json("games", params)
+        except Exception:
+            break
         batch = data.get("data", [])
         games.extend(batch)
         if len(batch) < 100:
             break
         page += 1
     return games
-
 
 def get_opponent_from_game(game: Dict[str, Any], team_id: int) -> (Dict[str, Any], str):
     home = game["home_team"]
@@ -328,37 +416,22 @@ def get_opponent_from_game(game: Dict[str, Any], team_id: int) -> (Dict[str, Any
     else:
         return home, "Away"
 
-
-@st.cache_data(ttl=900, show_spinner=False)
-def get_recent_stats_for_h2h(player_id: int, seasons: List[int]) -> List[Dict[str, Any]]:
-    stats_all: List[Dict[str, Any]] = []
-    for season in seasons:
-        stats_all.extend(get_player_stats_for_season(player_id, season))
-    return stats_all
-
-
-def h2h_stats_vs_team(stats: List[Dict[str, Any]], opp_team_id: int) -> List[Dict[str, Any]]:
-    return [
-        s for s in stats
-        if s["game"]["home_team_id"] == opp_team_id
-        or s["game"]["visitor_team_id"] == opp_team_id
-    ]
-
-
 @st.cache_data(ttl=300, show_spinner=False)
 def get_team_injuries(team_id: int) -> List[Dict[str, Any]]:
     injuries = []
     page = 1
     while True:
         params = {"team_ids[]": team_id, "per_page": 100, "page": page}
-        data = fetch_json("player_injuries", params)
+        try:
+            data = fetch_json("player_injuries", params)
+        except Exception:
+            break
         batch = data.get("data", [])
         injuries.extend(batch)
         if len(batch) < 100:
             break
         page += 1
     return injuries
-
 
 def injuries_to_df(injuries: List[Dict[str, Any]]) -> pd.DataFrame:
     rows = []
@@ -374,7 +447,6 @@ def injuries_to_df(injuries: List[Dict[str, Any]]) -> pd.DataFrame:
         )
     return pd.DataFrame(rows)
 
-
 def get_headshot_url(first: str, last: str) -> str:
     def slug(s: str) -> str:
         s = s.lower()
@@ -382,7 +454,6 @@ def get_headshot_url(first: str, last: str) -> str:
             s = s.replace(ch, "_")
         return s
     return f"https://nba-players.herokuapp.com/players/{slug(last)}/{slug(first)}"
-
 
 def metric_card(col, label: str, value: Optional[float], extra: str = ""):
     display_val = "—" if value is None else value
@@ -401,10 +472,6 @@ def metric_card(col, label: str, value: Optional[float], extra: str = ""):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_team_points_allowed_avg(team_id: int, season: int) -> Optional[float]:
-    """
-    Compute average points allowed per game for the team in the season
-    by inspecting the game scores from BallDontLie.
-    """
     games = get_team_games_for_season(team_id, season)
     if not games:
         return None
@@ -423,30 +490,16 @@ def get_team_points_allowed_avg(team_id: int, season: int) -> Optional[float]:
         return None
     return float(sum(allowed) / len(allowed))
 
-
 def map_points_allowed_to_def_score(points_allowed: Optional[float]) -> float:
-    """
-    Map points allowed per game to 0.1-0.9 scale where lower = tougher defense.
-    Uses 110 as central league average and a spread of ~20 points for scaling.
-    """
     if points_allowed is None:
         return 0.5
     league_avg = 110.0
-    diff = points_allowed - league_avg  # positive => softer defense
-    # scale diff (-inf..inf) -> offset [-0.4,0.4] approx
+    diff = points_allowed - league_avg
     offset = (diff / 20.0) * 0.4
     raw = 0.5 + offset
     return float(max(0.1, min(0.9, raw)))
 
-
 def predict_player_minutes(player_stats_recent: List[Dict[str, Any]], season_stats: List[Dict[str, Any]], team_id: Optional[int]) -> (Optional[float], float):
-    """
-    Return (predicted_minutes, minutes_adj) where minutes_adj is in [-1,1].
-    Strategy:
-      - Use last 10 games avg minutes if available, else season avg minutes.
-      - Inspect team injuries and bump minutes by ~8% per injured rotation player (cap 25%).
-      - Derive minutes_adj by comparing predicted minutes to season avg minutes scaled by ~12 minutes.
-    """
     season_min_avg = average_for_prop(season_stats, "min") or 0.0
     last10_min = last_n_average(player_stats_recent, "min", 10) or season_min_avg or 0.0
 
@@ -454,22 +507,19 @@ def predict_player_minutes(player_stats_recent: List[Dict[str, Any]], season_sta
     if team_id is not None:
         try:
             inj = get_team_injuries(team_id)
-            # count likely rotation-impact injuries (status not None and includes Out or Questionable)
             count_inj = 0
             for x in inj:
                 st_text = (x.get("status") or "").lower()
                 if st_text and ("out" in st_text or "questionable" in st_text or "day_to_day" in st_text or "doubtful" in st_text):
                     count_inj += 1
-            bump = min(0.25, 0.08 * count_inj)  # 8% per injury, cap 25%
+            bump = min(0.25, 0.08 * count_inj)
         except Exception:
             bump = 0.0
 
     predicted_minutes = last10_min * (1.0 + bump)
-    # fallback if still zero
     if predicted_minutes <= 0:
         predicted_minutes = season_min_avg
 
-    # convert to minutes_adj (-1..1)
     denom = 12.0
     minutes_adj = (predicted_minutes - (season_min_avg or predicted_minutes)) / denom if denom else 0.0
     minutes_adj = max(-1.0, min(1.0, minutes_adj))
@@ -482,7 +532,6 @@ def predict_player_minutes(player_stats_recent: List[Dict[str, Any]], season_sta
 def normal_cdf(x: float) -> float:
     return 0.5 * (1 + math.erf(x / math.sqrt(2)))
 
-
 def implied_prob_from_american(odds: Optional[float]) -> float:
     if odds is None:
         return 0.535
@@ -491,13 +540,11 @@ def implied_prob_from_american(odds: Optional[float]) -> float:
     else:
         return 100.0 / (odds + 100.0)
 
-
 def american_to_decimal(odds: float) -> float:
     if odds < 0:
         return 1 + 100.0 / -odds
     else:
         return 1 + odds / 100.0
-
 
 def parse_american_odds(raw: str) -> Optional[float]:
     try:
@@ -509,11 +556,9 @@ def parse_american_odds(raw: str) -> Optional[float]:
     except Exception:
         return None
 
-
 def grade_from_prob_edge(p_hit: Optional[float], edge: Optional[float]) -> str:
     if p_hit is None or edge is None:
         return "N/A"
-
     if p_hit >= 0.65 and edge >= 0.12:
         return "A+"
     if p_hit >= 0.60 and edge >= 0.08:
@@ -527,7 +572,6 @@ def grade_from_prob_edge(p_hit: Optional[float], edge: Optional[float]) -> str:
     if edge < -0.06 and p_hit < 0.52:
         return "F"
     return "D"
-
 
 def compute_expected_and_grade(
     values_recent: List[float],
@@ -543,10 +587,8 @@ def compute_expected_and_grade(
 ) -> (Optional[float], Optional[float], Optional[float], str):
     if not values_recent or season is None:
         return None, None, None, "N/A"
-
     def safe(v, fallback):
         return fallback if v is None else v
-
     season_val = season
     l10_val = safe(l10, season_val)
     l5_val = safe(l5, l10_val)
@@ -559,8 +601,8 @@ def compute_expected_and_grade(
         0.30 * season_val
     )
 
-    matchup_adj = 1.0 + (opp_def_score - 0.5) * 0.16  # ±8%
-    injury_adj = 1.0 + minutes_adj * 0.15  # ±15%
+    matchup_adj = 1.0 + (opp_def_score - 0.5) * 0.16
+    injury_adj = 1.0 + minutes_adj * 0.15
 
     expected_stat = base_form * matchup_adj * injury_adj
 
@@ -578,7 +620,6 @@ def compute_expected_and_grade(
         p_hit = normal_cdf(z)
 
     p_hit = max(0.01, min(0.99, p_hit))
-
     book_p = implied_prob_from_american(odds_float)
     edge = p_hit - book_p
     grade = grade_from_prob_edge(p_hit, edge)
@@ -590,40 +631,29 @@ def compute_expected_and_grade(
 # -------------------------------------------------------------------
 
 def recompute_missing_model_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    For rows with missing ExpectedStat/HitProb/Edge/Grade, recompute model metrics.
-    Only backfills recent rows (last 7 days) to avoid heavy API calls.
-    Uses neutral matchup/minutes for backfill to be safe.
-    """
     cutoff = dt.date.today() - dt.timedelta(days=7)
-
     for idx, row in df.iterrows():
         val = row.get("ExpectedStat")
         if not (val is None or str(val).lower() in ("none", "nan", "")):
             continue
-
         try:
             d = dt.datetime.strptime(str(row["Date"]), "%Y-%m-%d").date()
         except Exception:
             continue
         if d < cutoff:
             continue
-
         try:
             player_id = int(row["Player ID"])
         except Exception:
             continue
-
         prop_label = str(row["Prop"])
         prop_key = PROP_DEFS.get(prop_label)
         if not prop_key:
             continue
-
         try:
             line = float(row["Line"])
         except Exception:
             continue
-
         side = str(row.get("Side", "Over"))
         odds_float = parse_american_odds(row.get("Odds", ""))
 
@@ -633,7 +663,6 @@ def recompute_missing_model_metrics(df: pd.DataFrame) -> pd.DataFrame:
         stats_current = get_player_stats_for_season(player_id, season)
         stats_prev = get_player_stats_for_season(player_id, prev_season)
         stats_recent = sorted(stats_prev + stats_current, key=lambda s: s["game"]["date"])
-
         if not stats_recent:
             continue
 
@@ -646,11 +675,9 @@ def recompute_missing_model_metrics(df: pd.DataFrame) -> pd.DataFrame:
             prop_value(s, prop_key)
             for s in (stats_recent[-20:] if len(stats_recent) > 20 else stats_recent)
         ]
-
         if not values_recent or season_avg is None:
             continue
 
-        # safe neutral values for backfill
         expected_stat, hit_prob, edge, grade = compute_expected_and_grade(
             values_recent,
             last5_avg,
@@ -672,7 +699,6 @@ def recompute_missing_model_metrics(df: pd.DataFrame) -> pd.DataFrame:
         df.at[idx, "HitProb"] = hit_prob
         df.at[idx, "Edge"] = edge
         df.at[idx, "Grade"] = grade
-
     return df
 
 # -------------------------------------------------------------------
@@ -708,7 +734,6 @@ def empty_history_df() -> pd.DataFrame:
         ]
     )
 
-
 def load_history() -> pd.DataFrame:
     if not os.path.exists(HISTORY_FILE):
         return empty_history_df()
@@ -722,10 +747,8 @@ def load_history() -> pd.DataFrame:
     except Exception:
         return empty_history_df()
 
-
 def save_history(df: pd.DataFrame) -> None:
     df.to_csv(HISTORY_FILE, index=False)
-
 
 def evaluate_results(df: pd.DataFrame) -> pd.DataFrame:
     today = dt.date.today()
@@ -733,49 +756,44 @@ def evaluate_results(df: pd.DataFrame) -> pd.DataFrame:
         result = str(row.get("Result", ""))
         if result in ("Hit", "Miss", "Push"):
             continue
-
         try:
             game_date = dt.datetime.strptime(str(row["Date"]), "%Y-%m-%d").date()
         except Exception:
             continue
-
         if game_date >= today:
             continue
-
         try:
             player_id = int(row["Player ID"])
             game_id = int(row["Game ID"])
         except Exception:
             continue
-
         prop_label = str(row["Prop"])
         prop_key = PROP_DEFS.get(prop_label)
         if not prop_key:
             continue
-
-        stats_data = fetch_json(
-            "stats",
-            {
-                "player_ids[]": player_id,
-                "game_ids[]": game_id,
-                "per_page": 10,
-            },
-        ).get("data", [])
-
+        try:
+            stats_data = fetch_json(
+                "stats",
+                {
+                    "player_ids[]": player_id,
+                    "game_ids[]": game_id,
+                    "per_page": 10,
+                },
+            ).get("data", [])
+        except Exception:
+            df.at[idx, "Result"] = "No data"
+            continue
         if not stats_data:
             df.at[idx, "Result"] = "No data"
             continue
-
         stat = stats_data[0]
         actual = prop_value(stat, prop_key)
         df.at[idx, "Actual"] = actual
-
         try:
             line_val = float(row["Line"])
         except Exception:
             df.at[idx, "Result"] = "Line error"
             continue
-
         side = str(row.get("Side", "Over"))
         if abs(actual - line_val) < 1e-6:
             res = "Push"
@@ -783,9 +801,7 @@ def evaluate_results(df: pd.DataFrame) -> pd.DataFrame:
             res = "Hit" if actual > line_val else "Miss"
         else:
             res = "Hit" if actual < line_val else "Miss"
-
         df.at[idx, "Result"] = res
-
     return df
 
 # -------------------------------------------------------------------
@@ -808,7 +824,6 @@ def empty_parlay_df() -> pd.DataFrame:
         ]
     )
 
-
 def load_parlay_history() -> pd.DataFrame:
     if not os.path.exists(PARLAY_FILE):
         return empty_parlay_df()
@@ -822,7 +837,6 @@ def load_parlay_history() -> pd.DataFrame:
     except Exception:
         return empty_parlay_df()
 
-
 def save_parlay_history(df: pd.DataFrame) -> None:
     df.to_csv(PARLAY_FILE, index=False)
 
@@ -834,35 +848,60 @@ if "prop_rows" not in st.session_state:
     st.session_state["prop_rows"] = []
 
 # -------------------------------------------------------------------
+# INITIAL PLAYER LIST (cache-first)
+# -------------------------------------------------------------------
+
+players = []
+try:
+    players = get_active_players()
+except Exception:
+    players = _read_players_cache()
+if players:
+    player_labels, player_info = build_player_index_from_list(players)
+else:
+    player_labels, player_info = [], {}
+
+# -------------------------------------------------------------------
 # MAIN UI
 # -------------------------------------------------------------------
 
 st.title("NBA Prop Research & Entry")
-
-players = get_active_players()
-if not players:
-    st.stop()
-
-player_labels, player_info = build_player_index(players)
 
 tab_form, tab_research, tab_history, tab_parlay = st.tabs(
     ["Prop Entry Form", "Player Research", "Prop History", "Parlay Builder"]
 )
 
 # ---------------------------
-# TAB 1: Prop Entry (mobile form) - automatic matchup & minutes
+# TAB 1: Prop Entry (mobile form) - automatic matchup & minutes, on-demand search
 # ---------------------------
 with tab_form:
     st.subheader("Daily Prop Entry")
 
-    # Mobile-first form
     with st.form(key="prop_entry_form", clear_on_submit=False):
         game_date = st.date_input("Game date", value=dt.date.today())
         player_search = st.text_input("Search player (2+ letters)", placeholder="Type first or last name")
-        player_options = [""]  # default blank
+        player_options = [""]
+
         if player_search and len(player_search.strip()) >= 2:
-            matching = [lab for lab in player_labels if player_search.strip().lower() in lab.lower()]
-            player_options = [""] + matching
+            # use API search (cached) to get matching players
+            try:
+                results = search_players(player_search.strip())
+            except Exception:
+                results = []
+            if results:
+                labels, info_map = build_player_index_from_list(results)
+                # merge into global player_info/labels
+                player_info.update(info_map)
+                for lab in labels:
+                    if lab not in player_labels:
+                        player_labels.append(lab)
+                player_options = [""] + labels
+            else:
+                # fallback to local matching
+                matching = [lab for lab in player_labels if player_search.strip().lower() in lab.lower()]
+                if matching:
+                    player_options = [""] + matching
+
         player_label = st.selectbox("Player", options=player_options, index=0)
 
         if player_label and player_label in player_info:
@@ -885,7 +924,6 @@ with tab_form:
         with col_btn_right:
             clear_pressed = st.form_submit_button("🧹 Clear inputs")
 
-    # Handle form actions
     if 'add_pressed' in locals() and add_pressed:
         if not (player_label and player_label in player_info):
             st.warning("Pick a player first.")
@@ -896,7 +934,6 @@ with tab_form:
             team_name = info["team_name"]
             team_abbr = info["team_abbr"]
 
-            # find the scheduled game and opponent
             game = get_team_game_on_date(team_id, game_date)
             opp_name = "Unknown"; home_away="N/A"; opp_id=None; game_id=None
             if game:
@@ -917,16 +954,20 @@ with tab_form:
             last10_avg = last_n_average(stats_recent, prop_key, 10)
             last20_avg = last_n_average(stats_recent, prop_key, 20)
 
-            # automatic opponent defensive score
             opp_def_score = 0.5
+            pred_minutes = None
+            minutes_adj = 0.0
             if opp_id is not None:
-                pts_allowed = get_team_points_allowed_avg(opp_id, current_season)
-                opp_def_score = map_points_allowed_to_def_score(pts_allowed)
+                try:
+                    pts_allowed = get_team_points_allowed_avg(opp_id, current_season)
+                    opp_def_score = map_points_allowed_to_def_score(pts_allowed)
+                except Exception:
+                    opp_def_score = 0.5
+            try:
+                pred_minutes, minutes_adj = predict_player_minutes(stats_recent, stats_current, team_id)
+            except Exception:
+                pred_minutes, minutes_adj = None, 0.0
 
-            # predicted minutes & minutes_adj
-            predicted_minutes, minutes_adj = predict_player_minutes(stats_recent, stats_current, team_id)
-
-            # compute expected & grade
             values_recent = [
                 prop_value(s, prop_key)
                 for s in (stats_recent[-20:] if len(stats_recent) > 20 else stats_recent)
@@ -986,11 +1027,9 @@ with tab_form:
     if 'clear_pressed' in locals() and clear_pressed:
         st.experimental_rerun()
 
-    # Show current sheet (compact)
     st.markdown("### Current prop sheet (tap a row to view)")
     if st.session_state["prop_rows"]:
         df_props = pd.DataFrame(st.session_state["prop_rows"])
-        # Ensure RowID exists
         if "RowID" not in df_props.columns:
             df_props["RowID"] = [str(uuid.uuid4()) for _ in range(len(df_props))]
             for i, rid in df_props["RowID"].items():
@@ -1008,7 +1047,6 @@ with tab_form:
             ["Player","Prop","Side","Line","Odds","ExpectedStat","HitProb","Grade","Result"]
         ], use_container_width=True, height=320)
 
-        # Delete
         del_col1, del_col2 = st.columns([2,1])
         with del_col1:
             del_idx = st.selectbox(
@@ -1027,7 +1065,6 @@ with tab_form:
                     save_history(hist_df)
                 st.experimental_rerun()
 
-        # Group by game (expanders)
         st.markdown("### Grouped by game")
         df_group = df_props.copy()
         df_group["GameLabel"] = df_group.apply(
@@ -1041,17 +1078,36 @@ with tab_form:
                     use_container_width=True,
                 )
     else:
-        st.info("No props added yet.")
+        st.info("No props added yet. Use the search box to find a player (type 2+ letters).")
 
 # ---------------------------
-# TAB 2: Player Research
+# TAB 2: Player Research (on-demand search)
 # ---------------------------
 with tab_research:
     st.subheader("Player Research Lab")
 
     rcol1, rcol2 = st.columns([1.2, 1])
     with rcol1:
-        research_player_label = st.selectbox("Player to research", options=[""] + player_labels, index=0)
+        research_search = st.text_input("Search player (2+ letters)", key="research_search")
+        research_player_label = ""
+        if research_search and len(research_search.strip()) >= 2:
+            try:
+                results = search_players(research_search.strip())
+            except Exception:
+                results = []
+            if results:
+                labels, info_map = build_player_index_from_list(results)
+                player_info.update(info_map)
+                for lab in labels:
+                    if lab not in player_labels:
+                        player_labels.append(lab)
+                research_player_label = st.selectbox("Player to research", options=[""] + labels, index=0)
+            else:
+                matching = [lab for lab in player_labels if research_search.strip().lower() in lab.lower()]
+                research_player_label = st.selectbox("Player to research", options=[""] + matching, index=0)
+        else:
+            research_player_label = st.selectbox("Player to research", options=[""] + player_labels, index=0)
+
     with rcol2:
         research_prop_choice = st.selectbox("Prop focus", options=list(PROP_DEFS.keys()), index=0)
 
@@ -1202,7 +1258,6 @@ with tab_parlay:
         st.info("No props in the current sheet. Add props on the form tab first.")
     else:
         df_props = pd.DataFrame(st.session_state["prop_rows"])
-        # Ensure RowIDs
         if "RowID" not in df_props.columns:
             df_props["RowID"] = [str(uuid.uuid4()) for _ in range(len(df_props))]
             for i, rid in df_props["RowID"].items():
