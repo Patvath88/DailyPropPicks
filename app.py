@@ -582,40 +582,64 @@ def generate_share_card(player_label, prop_label, side, line, odds, season_avg, 
     im = Image.new("RGB",(W,H), bg)
     draw = ImageDraw.Draw(im)
     try:
-        # fonts - rely on default PIL fonts; if not available, fall back
         font_bold = ImageFont.truetype("DejaVuSans-Bold.ttf", 28)
         font_med = ImageFont.truetype("DejaVuSans.ttf", 20)
         font_small = ImageFont.truetype("DejaVuSans.ttf", 16)
-    except:
+    except Exception:
         font_bold = ImageFont.load_default()
         font_med = ImageFont.load_default()
         font_small = ImageFont.load_default()
+
     # left: headshot box
     head_box = (26, 26, 26+260, 26+260)
+
     # try to fetch headshot bytes from player_label
-    first, last = player_label.split(" ",1)[0], player_label.split(" ",1)[1].split("(",1)[0].strip()
-    head_bytes = try_headshot_by_name(first,last)
+    # player_label typically like "LeBron James (LAL)" so extract first & last
+    try:
+        parts = player_label.split(" ", 2)
+        first = parts[0]
+        # last may include team abbrev in parentheses, try safer approach
+        last = player_label.replace(first, "").strip().split("(")[0].strip().split(" ")[0]
+    except Exception:
+        first = player_label
+        last = ""
+
+    head_bytes = try_headshot_by_name(first, last)
     try:
         head_img = Image.open(BytesIO(head_bytes)).convert("RGB").resize((260,260))
-    except:
+    except Exception:
         head_img = Image.open(BytesIO(SILHOUETTE_BYTES)).convert("RGB").resize((260,260))
+
     im.paste(head_img, (26,26))
+
     # Right: player & prop
     x0 = 310
     draw.text((x0, 36), player_label, font=font_bold, fill=text_color)
     draw.text((x0, 78), f"{prop_label} · {side} {line} ({odds})", font=font_med, fill=muted)
-    # metrics box row
+
+    # metrics: draw vertically with consistent spacing
     metric_y = 130
     metrics = [
         ("Season", season_avg), ("L5", l5), ("L10", l10), ("Opp Def", opp_def_score), ("Pred Min", pred_min)
     ]
-    mx = x0; for i,(lab,val) in enumerate(metrics):
-        draw.text((mx, metric_y + i*32), f"{lab}: {val}", font=font_small, fill=text_color if val is not None else muted)
-    # bottom right predictions
-    draw.text((x0, 300), f"Expected: {expected_stat}   Hit%: {hitprob*100 if hitprob is not None else '—'}%   Grade: {grade}", font=font_med, fill=accent)
-    # small footer
+    mx = x0
+    for i, (lab, val) in enumerate(metrics):
+        y = metric_y + i * 32
+        val_text = "—" if val is None else str(val)
+        draw.text((mx, y), f"{lab}: {val_text}", font=font_small, fill=text_color)
+
+    # bottom section: expected / hit% / grade
+    hit_text = "—" if hitprob is None else f"{hitprob*100:.1f}%"
+    exp_text = "—" if expected_stat is None else str(expected_stat)
+    grade_text = grade or "—"
+    draw.text((x0, 300), f"Expected: {exp_text}   Hit%: {hit_text}   Grade: {grade_text}", font=font_med, fill=accent)
+
+    # footer
     draw.text((26, 360), "Built with NBA Prop Research App", font=font_small, fill=muted)
-    bio = BytesIO(); im.save(bio, format="PNG"); bio.seek(0)
+
+    bio = BytesIO()
+    im.save(bio, format="PNG")
+    bio.seek(0)
     return bio.getvalue()
 
 # -----------------------------
